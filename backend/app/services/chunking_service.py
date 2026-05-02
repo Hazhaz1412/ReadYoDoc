@@ -2,6 +2,7 @@
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from app.config import settings
+from app.services import settings_service
 
 
 def chunk_text(
@@ -20,8 +21,8 @@ def chunk_text(
         List of dicts with keys: content, source, page, chunk_index.
     """
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=settings.CHUNK_SIZE,
-        chunk_overlap=settings.CHUNK_OVERLAP,
+        chunk_size=settings_service.get("CHUNK_SIZE"),
+        chunk_overlap=settings_service.get("CHUNK_OVERLAP"),
         length_function=len,
         separators=["\n\n", "\n", ". ", ", ", " ", ""],
     )

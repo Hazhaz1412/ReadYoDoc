@@ -5,6 +5,7 @@ import json
 import logging
 from typing import AsyncGenerator
 from app.config import settings
+from app.services import settings_service
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +98,7 @@ async def generate_answer_stream(
 
     url = f"{settings.OLLAMA_BASE_URL}/api/chat"
     payload = {
-        "model": settings.LLM_MODEL,
+        "model": settings_service.get("LLM_MODEL"),
         "messages": messages,
         "stream": True,
         "options": {
@@ -157,11 +158,12 @@ async def generate_answer(
 async def check_llm_connection() -> bool:
     """Check if the LLM model is available on the Ollama server."""
     try:
+        llm_model = settings_service.get("LLM_MODEL")
         url = f"{settings.OLLAMA_BASE_URL}/api/tags"
         response = await _client.get(url)
         response.raise_for_status()
         models = response.json().get("models", [])
         model_names = [m["name"] for m in models]
-        return any(settings.LLM_MODEL in name for name in model_names)
+        return any(llm_model in name for name in model_names)
     except Exception:
         return False

@@ -108,3 +108,14 @@ class HealthResponse(BaseModel):
     vision_enabled: bool
     documents_count: int
     chroma_collection: str
+
+
+class SettingsUpdate(BaseModel):
+    """Payload for updating dynamic settings."""
+    LLM_MODEL: Optional[str] = None
+    EMBEDDING_MODEL: Optional[str] = None
+    VISION_MODEL: Optional[str] = None
+    VISION_ENABLED: Optional[bool] = None
+    MEMORY_MAX_MESSAGES: Optional[int] = Field(None, ge=0, le=100)
+    CHUNK_SIZE: Optional[int] = Field(None, ge=100, le=4000)
+    CHUNK_OVERLAP: Optional[int] = Field(None, ge=0, le=1000)

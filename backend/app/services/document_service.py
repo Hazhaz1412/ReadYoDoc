@@ -9,6 +9,7 @@ from docx import Document as DocxDocument
 from PIL import Image
 
 from app.config import settings
+from app.services import settings_service
 from app.services import chunking_service, embedding_service, vector_store
 from app.services import vision_service
 from app.database import db
@@ -53,7 +54,7 @@ async def process_document(file_path: str, filename: str, doc_id: str) -> int:
         logger.info(f"[{doc_id}] Extracted {len(pages)} pages, {total_text} chars")
 
         # Step 2: Vision — analyze images if enabled
-        if settings.VISION_ENABLED:
+        if settings_service.get("VISION_ENABLED"):
             await _update_progress(
                 doc_id,
                 status="processing",
@@ -173,7 +174,7 @@ def _parse_pdf(file_path: str) -> list[dict]:
 
         # Extract images from this page
         images_b64 = []
-        if settings.VISION_ENABLED:
+        if settings_service.get("VISION_ENABLED"):
             try:
                 for img_obj in page.images:
                     try:
@@ -210,7 +211,7 @@ def _parse_docx(file_path: str) -> list[dict]:
 
     # Extract embedded images
     images_b64 = []
-    if settings.VISION_ENABLED:
+    if settings_service.get("VISION_ENABLED"):
         try:
             for rel in doc.part.rels.values():
                 if "image" in rel.reltype:

@@ -1,46 +1,17 @@
-<script>
+import re
 
-  import { onMount, tick } from 'svelte';
+with open('/tmp/page_backup.svelte', 'r') as f:
+    original = f.read()
 
-  const promptStarters = [
-    'Summarize the key themes and recurring concerns across the uploaded documents.',
-    'What contradictions or inconsistencies exist across these documents?',
-    'Create an executive brief with risks, decisions, and next actions from the documents.',
-    'List the strongest evidence you found and cite the relevant documents for each point.',
-  ];
+# Extract script content
+script_match = re.search(r'<script>(.*?)</script>', original, re.DOTALL)
+script_content = script_match.group(1) if script_match else ""
 
-  let documents = [];
-  let messages = [];
-  let query = '';
-  let thinking = false;
-  let isStreaming = false;
-  let dragActive = false;
-  let sidebarOpen = false;
-  let realtimeState = 'connecting';
-  let realtimeText = 'Connecting live feed';
-  let chatInput;
-  let fileInput;
-  let conversationEl;
-  let ws;
-  let reconnectTimer;
-  let healthTimer;
-  let health = {
-    status: 'checking',
-    connected: false,
-    statusText: 'Checking backend health',
-    llmModel: 'qwen3.5:9b',
-    embeddingModel: 'bge-m3',
-    visionModel: 'qwen3-vl:8b',
-    visionEnabled: true,
-    documentsCount: 0,
-    readyCount: 0,
-  };
-  let toasts = [];
-
-  // Conversation memory
-  let conversationId = null;
-  let conversations = [];
-  let activeView = 'chat';
+# Modify script content
+# 1. Add new state
+script_content = script_content.replace(
+    "let memoryLimit = 20;",
+    """let activeView = 'chat';
   let systemSettings = {
     LLM_MODEL: 'qwen3.5:9b',
     EMBEDDING_MODEL: 'bge-m3',
@@ -50,41 +21,17 @@
     CHUNK_SIZE: 500,
     CHUNK_OVERLAP: 50
   };
-  let isSavingSettings = false;
+  let isSavingSettings = false;"""
+)
 
-  $: readyDocuments = documents.filter((doc) => doc.status === 'ready').length;
-  $: processingDocuments = documents.filter((doc) => doc.status === 'processing').length;
-  $: totalDocuments = documents.length;
-  $: canSend = query.trim().length > 0 && !isStreaming;
+# 2. Add loadSettings and call it in onMount
+script_content = script_content.replace(
+    "loadDocuments();",
+    "loadDocuments();\n    loadSettings();"
+)
 
-  onMount(() => {
-    loadDocuments();
-    loadSettings();
-    loadConversations();
-    connectDocumentStream();
-    checkHealth();
-    healthTimer = setInterval(checkHealth, 30000);
-
-    return () => {
-      if (ws) ws.close();
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      if (healthTimer) clearInterval(healthTimer);
-    };
-  });
-
-  async function loadDocuments() {
-    try {
-      const res = await fetch('/api/documents');
-      if (!res.ok) throw new Error('Failed to load documents');
-      const data = await res.json();
-      documents = (data.documents || []).map(normalizeDocument);
-    } catch (error) {
-      notify(error.message, 'error');
-      setRealtime('error', 'Unable to load live queue');
-    }
-  }
-
-  
+# 3. Add loadSettings and saveSettings functions
+functions_to_add = """
   async function loadSettings() {
     try {
       const res = await fetch('/api/settings');
@@ -115,437 +62,15 @@
       isSavingSettings = false;
     }
   }
+"""
+script_content = script_content.replace("function connectDocumentStream() {", functions_to_add + "\n  function connectDocumentStream() {")
 
-  function connectDocumentStream() {
-    setRealtime('connecting', 'Connecting live feed');
-    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    ws = new WebSocket(`${protocol}://${window.location.host}/api/documents/ws`);
+# 4. Modify submitQuery to use systemSettings.MEMORY_MAX_MESSAGES
+script_content = script_content.replace("memory_limit: memoryLimit", "memory_limit: systemSettings.MEMORY_MAX_MESSAGES")
 
-    ws.addEventListener('open', () => {
-      setRealtime('connected', 'Live feed connected');
-    });
-
-    ws.addEventListener('message', (event) => {
-      const payload = JSON.parse(event.data);
-      if (payload.type === 'documents.snapshot') {
-        documents = (payload.documents || []).map(normalizeDocument);
-        return;
-      }
-
-      if (payload.type === 'document.created' || payload.type === 'document.updated') {
-        upsertDocument(payload.document);
-        return;
-      }
-
-      if (payload.type === 'document.deleted') {
-        documents = documents.filter((doc) => doc.id !== payload.document_id);
-      }
-    });
-
-    ws.addEventListener('close', () => {
-      setRealtime('connecting', 'Reconnecting live feed');
-      scheduleReconnect();
-    });
-
-    ws.addEventListener('error', () => {
-      setRealtime('error', 'Live feed unavailable');
-    });
-  }
-
-  function scheduleReconnect() {
-    if (reconnectTimer) return;
-    reconnectTimer = setTimeout(() => {
-      reconnectTimer = null;
-      connectDocumentStream();
-    }, 2500);
-  }
-
-  function setRealtime(state, label) {
-    realtimeState = state;
-    realtimeText = label;
-  }
-
-  function upsertDocument(nextDoc) {
-    const normalizedDoc = normalizeDocument(nextDoc);
-    const index = documents.findIndex((doc) => doc.id === normalizedDoc.id);
-    if (index === -1) {
-      documents = [normalizedDoc, ...documents];
-      return;
-    }
-
-    const nextDocuments = [...documents];
-    nextDocuments[index] = normalizedDoc;
-    documents = nextDocuments.sort((a, b) => {
-      if (a.upload_date < b.upload_date) return 1;
-      if (a.upload_date > b.upload_date) return -1;
-      return 0;
-    });
-  }
-
-  async function checkHealth() {
-    try {
-      const res = await fetch('/api/health');
-      if (!res.ok) throw new Error('Health check failed');
-      const data = await res.json();
-      health = {
-        status: data.status,
-        connected: data.ollama_connected,
-        statusText: data.ollama_connected
-          ? `Backend healthy · ${data.documents_count} ready`
-          : 'Model connectivity degraded',
-        llmModel: data.llm_model,
-        embeddingModel: data.embedding_model,
-        visionModel: data.vision_model,
-        visionEnabled: data.vision_enabled,
-        documentsCount: data.documents_count,
-        readyCount: data.documents_count,
-      };
-    } catch {
-      health = {
-        ...health,
-        status: 'offline',
-        connected: false,
-        statusText: 'Backend offline',
-      };
-    }
-  }
-
-  async function handleFiles(fileList) {
-    if (!fileList || fileList.length === 0) return;
-    const allowed = ['.pdf', '.docx', '.txt', '.md'];
-    const files = Array.from(fileList);
-
-    for (const file of files) {
-      const ext = `.${file.name.split('.').pop().toLowerCase()}`;
-      if (!allowed.includes(ext)) {
-        notify(`Unsupported file: ${file.name}`, 'error');
-        return;
-      }
-    }
-
-    const formData = new FormData();
-    for (const file of files) {
-      formData.append('files', file);
-    }
-
-    try {
-      const res = await fetch('/api/documents/upload', {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!res.ok) {
-        const error = await res.json().catch(() => ({ detail: 'Upload failed' }));
-        throw new Error(error.detail || 'Upload failed');
-      }
-
-      const uploaded = await res.json();
-      notify(`Queued ${uploaded.length} document${uploaded.length > 1 ? 's' : ''} for ingestion`, 'success');
-      fileInput.value = '';
-    } catch (error) {
-      notify(error.message, 'error');
-    }
-  }
-
-  async function deleteDocument(id) {
-    if (!window.confirm('Delete this document and all of its indexed chunks?')) return;
-
-    try {
-      const res = await fetch(`/api/documents/${id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error('Failed to delete document');
-      notify('Document removed', 'success');
-    } catch (error) {
-      notify(error.message, 'error');
-    }
-  }
-
-  async function sendMessage() {
-    const trimmed = query.trim();
-    if (!trimmed || isStreaming) return;
-
-    const assistantMessage = {
-      id: crypto.randomUUID(),
-      role: 'assistant',
-      sender: 'RAG Assistant',
-      text: '',
-      html: '',
-      time: nowTime(),
-      typing: true,
-      sources: [],
-      sourcesOpen: false,
-    };
-
-    messages = [
-      ...messages,
-      {
-        id: crypto.randomUUID(),
-        role: 'user',
-        sender: 'Operator',
-        text: trimmed,
-        time: nowTime(),
-      },
-      assistantMessage,
-    ];
-
-    query = '';
-    isStreaming = true;
-    resizeTextarea();
-    await scrollConversation();
-
-    try {
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          query: trimmed,
-          top_k: 5,
-          use_thinking: thinking,
-          conversation_id: conversationId,
-          memory_limit: systemSettings.MEMORY_MAX_MESSAGES,
-        }),
-      });
-
-      if (!res.ok) {
-        const error = await res.json().catch(() => ({ detail: 'Chat request failed' }));
-        throw new Error(error.detail || 'Chat request failed');
-      }
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let fullText = '';
-      let doneSignal = false;
-      let sources = [];
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          const payload = JSON.parse(line.slice(6));
-
-          if (payload.type === 'meta') {
-            if (payload.data?.conversation_id) {
-              conversationId = payload.data.conversation_id;
-              loadConversations();
-            }
-            continue;
-          }
-
-          if (payload.type === 'sources') {
-            sources = payload.data;
-            continue;
-          }
-
-          if (payload.type === 'token') {
-            fullText += payload.data;
-            patchAssistantMessage(assistantMessage.id, {
-              typing: false,
-              text: fullText,
-              html: renderMarkdown(fullText),
-            });
-            await scrollConversation();
-            continue;
-          }
-
-          if (payload.type === 'done') {
-            doneSignal = true;
-          }
-        }
-      }
-
-      patchAssistantMessage(assistantMessage.id, {
-        typing: false,
-        text: fullText,
-        html: fullText ? renderMarkdown(fullText) : '<p>No answer returned.</p>',
-        sources,
-        sourcesOpen: false,
-      });
-
-      if (!doneSignal && !fullText) {
-        notify('No answer returned', 'error');
-      }
-    } catch (error) {
-      patchAssistantMessage(assistantMessage.id, {
-        typing: false,
-        text: error.message,
-        html: `<p class="text-rose-300">${escapeHtml(error.message)}</p>`,
-        sources: [],
-      });
-      notify(error.message, 'error');
-    } finally {
-      isStreaming = false;
-      await scrollConversation();
-    }
-  }
-
-  function patchAssistantMessage(id, patch) {
-    messages = messages.map((message) => (message.id === id ? { ...message, ...patch } : message));
-  }
-
-  function toggleSources(id) {
-    messages = messages.map((message) =>
-      message.id === id ? { ...message, sourcesOpen: !message.sourcesOpen } : message
-    );
-  }
-
-  function applyPrompt(text) {
-    query = text;
-    resizeTextarea();
-    chatInput?.focus();
-  }
-
-  // ─── Conversation management ───────────────────────────────
-
-  function newChat() {
-    conversationId = null;
-    messages = [];
-    query = '';
-    resizeTextarea();
-    chatInput?.focus();
-  }
-
-  async function loadConversations() {
-    try {
-      const res = await fetch('/api/conversations');
-      if (!res.ok) return;
-      const data = await res.json();
-      conversations = data.conversations || [];
-    } catch { /* silent */ }
-  }
-
-  async function loadConversation(convId) {
-    try {
-      const res = await fetch(`/api/conversations/${convId}/messages?limit=200`);
-      if (!res.ok) return;
-      const data = await res.json();
-      conversationId = convId;
-      messages = (data.messages || []).map((msg) => ({
-        id: msg.id,
-        role: msg.role,
-        sender: msg.role === 'assistant' ? 'RAG Assistant' : 'Operator',
-        text: msg.content,
-        html: msg.role === 'assistant' ? renderMarkdown(msg.content) : '',
-        time: new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        typing: false,
-        sources: [],
-        sourcesOpen: false,
-      }));
-      sidebarOpen = false;
-      await scrollConversation();
-    } catch (error) {
-      notify(error.message, 'error');
-    }
-  }
-
-  async function deleteConversation(convId) {
-    if (!window.confirm('Delete this conversation and all messages?')) return;
-    try {
-      const res = await fetch(`/api/conversations/${convId}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error('Failed to delete');
-      if (conversationId === convId) newChat();
-      await loadConversations();
-      notify('Conversation deleted', 'success');
-    } catch (error) {
-      notify(error.message, 'error');
-    }
-  }
-
-  function formatConvDate(isoDate) {
-    const d = new Date(isoDate);
-    const now = new Date();
-    if (d.toDateString() === now.toDateString()) return 'Today';
-    const yesterday = new Date(now);
-    yesterday.setDate(yesterday.getDate() - 1);
-    if (d.toDateString() === yesterday.toDateString()) return 'Yesterday';
-    return d.toLocaleDateString();
-  }
-
-  function onDrop(event) {
-    event.preventDefault();
-    dragActive = false;
-    handleFiles(event.dataTransfer.files);
-  }
-
-  function resizeTextarea() {
-    if (!chatInput) return;
-    chatInput.style.height = 'auto';
-    chatInput.style.height = `${Math.min(chatInput.scrollHeight, 168)}px`;
-  }
-
-  async function scrollConversation() {
-    await tick();
-    if (conversationEl) {
-      conversationEl.scrollTop = conversationEl.scrollHeight;
-    }
-  }
-
-  function notify(message, type = 'success') {
-    const toast = { id: crypto.randomUUID(), message, type };
-    toasts = [...toasts, toast];
-    setTimeout(() => {
-      toasts = toasts.filter((item) => item.id !== toast.id);
-    }, 3200);
-  }
-
-  function nowTime() {
-    return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  }
-
-  function formatSize(bytes) {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  }
-
-  function normalizeDocument(doc) {
-    return {
-      ...doc,
-      extension: doc.extension ?? doc.file_type ?? '',
-      size: doc.size ?? doc.file_size ?? 0,
-      progress_msg: doc.progress_msg ?? doc.status_detail ?? '',
-    };
-  }
-
-  function documentBadge(doc) {
-    const ext = (doc.extension || doc.file_type || '').replace('.', '').toUpperCase();
-    return ext || 'FILE';
-  }
-
-  function renderMarkdown(text) {
-    let html = escapeHtml(text);
-    html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
-    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-    html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-    html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
-    html = html.replace(/^### (.+)$/gm, '<h4>$1</h4>');
-    html = html.replace(/^## (.+)$/gm, '<h3>$1</h3>');
-    html = html.replace(/^# (.+)$/gm, '<h2>$1</h2>');
-    html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
-    html = html.replace(/(?:^|\n)- (.+)/gm, '\n<li>$1</li>');
-    html = html.replace(/(?:^|\n)\d+\. (.+)/gm, '\n<li>$1</li>');
-    html = html.replace(/(?:\s*<li>.*?<\/li>\s*)+/gs, (match) => `<ul>${match}</ul>`);
-    html = html.replace(/\n\n+/g, '</p><p>');
-    html = html.replace(/\n/g, '<br>');
-    return `<p>${html}</p>`;
-  }
-
-  function escapeHtml(text) {
-    return text
-      .replaceAll('&', '&amp;')
-      .replaceAll('<', '&lt;')
-      .replaceAll('>', '&gt;')
-      .replaceAll('"', '&quot;')
-      .replaceAll("'", '&#39;');
-  }
-
-</script>
-
+# Construct full Svelte file
+# We will use string template for HTML
+new_html = """
 <svelte:head>
   <title>AI RAG Control Center</title>
 </svelte:head>
@@ -742,7 +267,7 @@
             </div>
           </div>
 
-          <form class="glass-panel relative mx-auto flex w-full max-w-4xl flex-col gap-3 rounded-[32px] bg-[linear-gradient(180deg,rgba(15,23,42,0.8),rgba(15,23,42,0.95))] p-4 shadow-[0_8px_32px_-8px_rgba(0,0,0,0.5)]" on:submit|preventDefault={sendMessage}>
+          <form class="glass-panel relative mx-auto flex w-full max-w-4xl flex-col gap-3 rounded-[32px] bg-[linear-gradient(180deg,rgba(15,23,42,0.8),rgba(15,23,42,0.95))] p-4 shadow-[0_8px_32px_-8px_rgba(0,0,0,0.5)]" on:submit|preventDefault={submitQuery}>
             <textarea
               bind:this={chatInput}
               bind:value={query}
@@ -753,7 +278,7 @@
               on:keydown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();
-                  sendMessage();
+                  submitQuery();
                 }
               }}
             ></textarea>
@@ -857,7 +382,7 @@
                   <div class="group flex flex-col gap-3 rounded-2xl bg-white/[0.02] p-4 transition hover:bg-white/[0.04]">
                     <div class="flex items-start gap-4">
                       <div class="grid h-12 w-12 flex-shrink-0 place-items-center rounded-xl bg-white/5 text-xs font-black text-slate-400">
-                        {documentBadge(doc)}
+                        {doc.extension.replace('.', '').toUpperCase()}
                       </div>
                       <div class="min-w-0 flex-1">
                         <h4 class="truncate text-sm font-bold text-slate-100" title={doc.filename}>
@@ -1073,3 +598,9 @@
     box-shadow: 0 0 40px -10px rgba(125, 211, 252, 0.15);
   }
 </style>
+"""
+
+with open('/tmp/page_new.svelte', 'w') as f:
+    f.write("<script>\n" + script_content + "\n</script>\n" + new_html)
+
+print("Created /tmp/page_new.svelte")

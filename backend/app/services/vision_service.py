@@ -7,6 +7,7 @@ import logging
 from typing import Optional
 
 from app.config import settings
+from app.services import settings_service
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,7 @@ async def describe_image(
     Returns:
         Text description of the image, or None if processing fails.
     """
-    if not settings.VISION_ENABLED:
+    if not settings_service.get("VISION_ENABLED"):
         return None
 
     prompt = VISION_PROMPT
@@ -45,7 +46,7 @@ async def describe_image(
 
     url = f"{settings.OLLAMA_BASE_URL}/api/chat"
     payload = {
-        "model": settings.VISION_MODEL,
+        "model": settings_service.get("VISION_MODEL"),
         "messages": [
             {
                 "role": "user",
@@ -105,7 +106,7 @@ async def describe_images(
 
 async def check_vision_model() -> bool:
     """Check if the vision model is available on the Ollama server."""
-    if not settings.VISION_ENABLED:
+    if not settings_service.get("VISION_ENABLED"):
         return False
     try:
         url = f"{settings.OLLAMA_BASE_URL}/api/tags"
@@ -113,6 +114,6 @@ async def check_vision_model() -> bool:
         response.raise_for_status()
         models = response.json().get("models", [])
         model_names = [m["name"] for m in models]
-        return any(settings.VISION_MODEL in name for name in model_names)
+        return any(settings_service.get("VISION_MODEL") in name for name in model_names)
     except Exception:
         return False

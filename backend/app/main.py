@@ -11,9 +11,9 @@ from fastapi.responses import FileResponse
 
 from app.config import settings
 from app.database import db
-from app.models.schemas import HealthResponse
+from app.models.schemas import HealthResponse, SettingsUpdate
 from app.api import documents, chat
-from app.services import vector_store, llm_service, embedding_service
+from app.services import vector_store, llm_service, embedding_service, vision_service, settings_service
 
 # Configure logging
 logging.basicConfig(
@@ -31,6 +31,9 @@ async def lifespan(app: FastAPI):
     await db.init_db()
     logger.info("📦 Database initialized")
 
+    # Load dynamic settings
+    await settings_service.load_settings()
+
     # Initialize ChromaDB collection
     collection = vector_store.get_collection()
     logger.info(f"🗄️  ChromaDB ready ({collection.count()} chunks)")
@@ -38,13 +41,27 @@ async def lifespan(app: FastAPI):
     # Check Ollama connectivity
     llm_ok = await llm_service.check_llm_connection()
     embed_ok = await embedding_service.check_embedding_model()
-    logger.info(f"🤖 LLM ({settings.LLM_MODEL}): {'✅' if llm_ok else '❌ NOT FOUND'}")
-    logger.info(f"📐 Embedding ({settings.EMBEDDING_MODEL}): {'✅' if embed_ok else '❌ NOT FOUND'}")
+    vision_ok = await vision_service.check_vision_model()
+    
+    llm_model = settings_service.get("LLM_MODEL")
+    emb_model = settings_service.get("EMBEDDING_MODEL")
+    vis_model = settings_service.get("VISION_MODEL")
+    vis_enabled = settings_service.get("VISION_ENABLED")
+    
+    logger.info(f"🤖 LLM ({llm_model}): {'✅' if llm_ok else '❌ NOT FOUND'}")
+    logger.info(f"📐 Embedding ({emb_model}): {'✅' if embed_ok else '❌ NOT FOUND'}")
+    logger.info(f"👁️  Vision ({vis_model}): {'✅' if vision_ok else '❌ NOT FOUND'} (enabled={vis_enabled})")
 
     if not embed_ok:
         logger.warning(
-            f"⚠️  Embedding model '{settings.EMBEDDING_MODEL}' not found! "
-            f"Run: ollama pull {settings.EMBEDDING_MODEL}"
+            f"⚠️  Embedding model '{emb_model}' not found! "
+            f"Run: ollama pull {emb_model}"
+        )
+
+    if vis_enabled and not vision_ok:
+        logger.warning(
+            f"⚠️  Vision model '{vis_model}' not found! "
+            f"Run: ollama pull {vis_model}"
         )
 
     yield
@@ -79,18 +96,37 @@ app.include_router(chat.router)
 @app.get("/api/health", response_model=HealthResponse, tags=["System"])
 async def health_check():
     """Check system health and connectivity."""
+    vis_enabled = settings_service.get("VISION_ENABLED")
     llm_ok = await llm_service.check_llm_connection()
     embed_ok = await embedding_service.check_embedding_model()
+    vision_ok = await vision_service.check_vision_model() if vis_enabled else False
     doc_count = await db.get_document_count()
 
     return HealthResponse(
         status="healthy" if (llm_ok and embed_ok) else "degraded",
         ollama_connected=llm_ok and embed_ok,
-        llm_model=settings.LLM_MODEL,
-        embedding_model=settings.EMBEDDING_MODEL,
+        llm_model=settings_service.get("LLM_MODEL"),
+        embedding_model=settings_service.get("EMBEDDING_MODEL"),
+        vision_model=settings_service.get("VISION_MODEL"),
+        vision_enabled=vis_enabled,
         documents_count=doc_count,
         chroma_collection=settings.CHROMA_COLLECTION,
     )
+
+
+@app.get("/api/settings", tags=["System"])
+async def get_settings():
+    """Get dynamic system settings."""
+    return settings_service.get_all()
+
+
+@app.post("/api/settings", tags=["System"])
+async def update_settings(payload: SettingsUpdate):
+    """Update dynamic system settings."""
+    updates = payload.model_dump(exclude_unset=True)
+    if updates:
+        await settings_service.update_settings(updates)
+    return {"status": "success", "settings": settings_service.get_all()}
 
 
 # Serve built frontend assets — container path first, then local dev build output

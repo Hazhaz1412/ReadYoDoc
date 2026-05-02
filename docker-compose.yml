@@ -29,6 +29,9 @@ services:
       - MAX_FILE_SIZE_MB=50
       - RUNNING_IN_DOCKER=true
       - DB_DATA_PATH=/data/db
+      - VISION_MODEL=qwen3-vl:8b
+      - VISION_ENABLED=true
+      - MEMORY_MAX_MESSAGES=20
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import httpx; print(httpx.get('http://localhost:8000/api/health').status_code)"]

@@ -3,6 +3,7 @@
 import httpx
 import logging
 from app.config import settings
+from app.services import settings_service
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,7 @@ async def generate_embeddings(texts: list[str]) -> list[list[float]]:
     """
     url = f"{settings.OLLAMA_BASE_URL}/api/embed"
     payload = {
-        "model": settings.EMBEDDING_MODEL,
+        "model": settings_service.get("EMBEDDING_MODEL"),
         "input": texts,
     }
 
@@ -70,11 +71,12 @@ async def generate_embeddings(texts: list[str]) -> list[list[float]]:
 async def check_embedding_model() -> bool:
     """Check if the embedding model is available on the Ollama server."""
     try:
+        emb_model = settings_service.get("EMBEDDING_MODEL")
         url = f"{settings.OLLAMA_BASE_URL}/api/tags"
         response = await _client.get(url)
         response.raise_for_status()
         models = response.json().get("models", [])
         model_names = [m["name"] for m in models]
-        return any(settings.EMBEDDING_MODEL in name for name in model_names)
+        return any(emb_model in name for name in model_names)
     except Exception:
         return False

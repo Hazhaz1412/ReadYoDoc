@@ -61,6 +61,42 @@ async def init_db():
                 FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
             )
         """)
+
+        # System Settings table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS system_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
+        await db.commit()
+
+
+async def get_all_settings() -> dict:
+    """Retrieve all system settings as a dictionary."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT key, value FROM system_settings")
+        rows = await cursor.fetchall()
+        return {row[0]: row[1] for row in rows}
+
+
+async def get_setting(key: str, default: str = None) -> str:
+    """Retrieve a single setting by key."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT value FROM system_settings WHERE key = ?", (key,))
+        row = await cursor.fetchone()
+        return row[0] if row else default
+
+
+async def set_setting(key: str, value: str):
+    """Insert or update a setting."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """INSERT INTO system_settings (key, value)
+               VALUES (?, ?)
+               ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+            (key, value),
+        )
         await db.commit()
 
 
