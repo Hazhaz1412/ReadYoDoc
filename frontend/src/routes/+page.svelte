@@ -280,7 +280,7 @@
       {
         id: crypto.randomUUID(),
         role: 'user',
-        sender: 'Operator',
+        sender: 'You',
         text: trimmed,
         time: nowTime(),
       },
@@ -428,7 +428,7 @@
       messages = (data.messages || []).map((msg) => ({
         id: msg.id,
         role: msg.role,
-        sender: msg.role === 'assistant' ? 'RAG Assistant' : 'Operator',
+        sender: msg.role === 'assistant' ? 'RAG Assistant' : 'You',
         text: msg.content,
         html: msg.role === 'assistant' ? renderMarkdown(msg.content) : '',
         time: new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -682,60 +682,68 @@
               {/if}
 
               {#each messages as message (message.id)}
-                <article class="grid animate-rise gap-4 md:grid-cols-[48px_minmax(0,1fr)]">
-                  <div
-                    class={`grid h-12 w-12 place-items-center rounded-[18px] border border-white/10 text-sm font-bold ${
-                      message.role === 'assistant'
-                        ? 'bg-[linear-gradient(135deg,rgba(100,210,255,0.18),rgba(255,186,102,0.22))]'
-                        : 'bg-white/[0.04]'
-                    }`}
-                  >
-                    {message.role === 'assistant' ? 'AI' : 'You'}
-                  </div>
-
-                  <div class="min-w-0">
-                    <div class="mb-2 flex items-center gap-3">
-                      <span class="text-sm font-extrabold text-white">{message.sender}</span>
-                      <span class="text-xs text-slate-400">{message.time}</span>
+                <article class={`flex animate-rise ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div class={`flex max-w-[min(78%,820px)] items-start gap-4 ${message.role === 'user' ? 'flex-row-reverse' : ''}`}>
+                    <div
+                      class={`grid h-12 w-12 flex-shrink-0 place-items-center rounded-[18px] border border-white/10 text-sm font-bold ${
+                        message.role === 'assistant'
+                          ? 'bg-[linear-gradient(135deg,rgba(100,210,255,0.18),rgba(255,186,102,0.22))]'
+                          : 'bg-white/[0.04]'
+                      }`}
+                    >
+                      {message.role === 'assistant' ? 'AI' : 'You'}
                     </div>
 
-                    {#if message.status === 'thinking'}
-                      <div class="flex items-center gap-2 text-sm italic text-amber-200/70">
-                        <span class="loading-dots">Thinking</span>
+                    <div class={`min-w-0 ${message.role === 'user' ? 'text-right' : ''}`}>
+                      <div class={`mb-2 flex items-center gap-3 ${message.role === 'user' ? 'justify-end' : ''}`}>
+                        <span class="text-sm font-extrabold text-white">{message.sender}</span>
+                        <span class="text-xs text-slate-400">{message.time}</span>
                       </div>
-                    {:else if message.status === 'searching'}
-                      <div class="flex items-center gap-2 text-sm italic text-sky-300/70">
-                        <span class="loading-dots">Searching vector database</span>
-                      </div>
-                    {:else if message.status === 'generating' || message.status === 'done'}
-                      {#if message.content}
-                        <div class="prose prose-invert prose-sky max-w-none text-[15px] leading-8 text-slate-200">
-                          {@html renderMarkdown(message.content)}
-                        </div>
-                      {/if}
 
-                      {#if message.sources && message.sources.length > 0}
-                        <div class="mt-4 flex flex-col gap-2">
-                          <span class="text-[11px] font-bold uppercase tracking-[0.2em] text-slate-500">
-                            Sources cited
-                          </span>
-                          <div class="flex flex-wrap gap-2">
-                            {#each message.sources as source}
-                              <button
-                                class="inline-flex max-w-[200px] items-center gap-2 truncate rounded-xl border border-white/5 bg-white/[0.02] px-3 py-1.5 text-xs text-slate-300 transition hover:bg-white/[0.06]"
-                                title={source.content}
-                              >
-                                <svg class="h-3.5 w-3.5 flex-shrink-0 text-sky-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                  <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"></path>
-                                  <path d="M14 2v6h6"></path>
-                                </svg>
-                                <span class="truncate">{source.source_file}</span>
-                              </button>
-                            {/each}
+                      {#if message.role === 'assistant'}
+                        {#if message.typing}
+                          <div class="inline-flex gap-1.5 py-2">
+                            <span class="h-2 w-2 animate-bounce rounded-full bg-slate-300/70 [animation-delay:-0.2s]"></span>
+                            <span class="h-2 w-2 animate-bounce rounded-full bg-slate-300/70 [animation-delay:-0.1s]"></span>
+                            <span class="h-2 w-2 animate-bounce rounded-full bg-slate-300/70"></span>
                           </div>
+                        {:else if message.html}
+                          <div class="prose prose-invert prose-sky max-w-none text-[15px] leading-8 text-slate-200">
+                            {@html message.html}
+                          </div>
+                        {:else if message.text}
+                          <div class="prose prose-invert prose-sky max-w-none text-[15px] leading-8 text-slate-200">
+                            {@html renderMarkdown(message.text)}
+                          </div>
+                        {/if}
+
+                        {#if message.sources && message.sources.length > 0}
+                          <div class="mt-4 flex flex-col gap-2">
+                            <span class="text-[11px] font-bold uppercase tracking-[0.2em] text-slate-500">
+                              Sources cited
+                            </span>
+                            <div class="flex flex-wrap gap-2">
+                              {#each message.sources as source}
+                                <button
+                                  class="inline-flex max-w-[200px] items-center gap-2 truncate rounded-xl border border-white/5 bg-white/[0.02] px-3 py-1.5 text-xs text-slate-300 transition hover:bg-white/[0.06]"
+                                  title={source.content}
+                                >
+                                  <svg class="h-3.5 w-3.5 flex-shrink-0 text-sky-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"></path>
+                                    <path d="M14 2v6h6"></path>
+                                  </svg>
+                                  <span class="truncate">{source.source_file}</span>
+                                </button>
+                              {/each}
+                            </div>
+                          </div>
+                        {/if}
+                      {:else}
+                        <div class="rounded-[22px] bg-[linear-gradient(180deg,rgba(25,58,104,0.95),rgba(18,44,86,0.98))] px-5 py-3 text-left text-[15px] leading-7 text-sky-50 shadow-[0_10px_30px_-14px_rgba(34,104,211,0.9)] ring-1 ring-sky-300/15">
+                          <p class="whitespace-pre-wrap break-words">{message.text}</p>
                         </div>
                       {/if}
-                    {/if}
+                    </div>
                   </div>
                 </article>
               {/each}
