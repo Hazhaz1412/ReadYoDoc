@@ -1,0 +1,46 @@
+# Full-name syntax for podman compatibility
+# Usage: podman-compose up --build  OR  docker compose up --build
+
+version: "3.8"
+
+services:
+  rag-app:
+    container_name: rag-assistant
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - rag-uploads:/data/uploads
+      - rag-chroma:/data/chroma_db
+      - rag-db:/data/db
+    environment:
+      - OLLAMA_BASE_URL=http://192.168.1.92:11434
+      - LLM_MODEL=qwen3.5:9b
+      - EMBEDDING_MODEL=bge-m3
+      - CHROMA_DB_PATH=/data/chroma_db
+      - CHROMA_COLLECTION=documents
+      - CHUNK_SIZE=1000
+      - CHUNK_OVERLAP=200
+      - HOST=0.0.0.0
+      - PORT=8000
+      - UPLOAD_DIR=/data/uploads
+      - MAX_FILE_SIZE_MB=50
+      - RUNNING_IN_DOCKER=true
+      - DB_DATA_PATH=/data/db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; print(httpx.get('http://localhost:8000/api/health').status_code)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  rag-uploads:
+    name: rag-uploads
+  rag-chroma:
+    name: rag-chroma
+  rag-db:
+    name: rag-db
