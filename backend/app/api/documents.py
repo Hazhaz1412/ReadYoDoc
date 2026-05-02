@@ -4,6 +4,7 @@ import os
 import logging
 from pathlib import Path
 from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 
 from app.config import settings
 from app.models.schemas import (
@@ -144,6 +145,17 @@ async def delete_document(doc_id: str):
         deleted=True,
         message=f"Deleted document '{doc['filename']}' and {chunks_deleted} chunks",
     )
+
+
+@router.get("/download/{filename}")
+async def download_document(filename: str):
+    """Serve a document file."""
+    # Prevent path traversal
+    safe_filename = os.path.basename(filename)
+    file_path = UPLOAD_DIR / safe_filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(path=file_path)
 
 
 @router.websocket("/ws")

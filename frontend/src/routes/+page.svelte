@@ -37,6 +37,12 @@
   let realtimeState = 'connecting';
   let realtimeText = 'Connecting live feed';
   let chatInput;
+
+  // Viewer state
+  let viewerOpen = false;
+  let viewerSource = null;
+  let viewerContent = '';
+  let viewerLoading = false;
   let fileInput;
   let conversationEl;
   let ws;
@@ -524,6 +530,75 @@
     chatInput?.focus();
   }
 
+  function insertDocumentName(filename) {
+    const textToInsert = filename.includes(' ') ? `"${filename}"` : filename;
+    if (query.length > 0 && !query.endsWith(' ')) {
+      query += ' ';
+    }
+    query += textToInsert + ' ';
+    resizeTextarea();
+    chatInput?.focus();
+  }
+
+  // ─── Document Viewer ───────────────────────────────────
+
+  async function openViewer(source) {
+    viewerSource = source;
+    viewerOpen = true;
+    viewerContent = '';
+    
+    if (!source.source_file.toLowerCase().endsWith('.pdf')) {
+      viewerLoading = true;
+      try {
+        const res = await fetch(`/api/documents/download/${encodeURIComponent(source.source_file)}`);
+        if (!res.ok) throw new Error('Failed to load document');
+        viewerContent = await res.text();
+      } catch (err) {
+        viewerContent = 'Error loading document: ' + err.message;
+      } finally {
+        viewerLoading = false;
+      }
+    }
+  }
+
+  function closeViewer() {
+    viewerOpen = false;
+    viewerSource = null;
+  }
+
+  function highlightText(fullText, chunk) {
+    if (!fullText || !chunk) return escapeHtml(fullText || '');
+    
+    const escapedFull = escapeHtml(fullText);
+    const escapedChunk = escapeHtml(chunk);
+    
+    const index = escapedFull.indexOf(escapedChunk);
+    if (index >= 0) {
+      setTimeout(scrollToHighlight, 100);
+      return escapedFull.substring(0, index) + 
+             `<mark id="highlight-target" class="bg-yellow-500/50 text-yellow-50 px-1 rounded">${escapedChunk}</mark>` + 
+             escapedFull.substring(index + escapedChunk.length);
+    }
+    
+    const prefix = escapedChunk.substring(0, 50);
+    const idx2 = escapedFull.indexOf(prefix);
+    if (idx2 >= 0 && prefix.length > 20) {
+      setTimeout(scrollToHighlight, 100);
+      return escapedFull.substring(0, idx2) + 
+             `<mark id="highlight-target" class="bg-yellow-500/50 text-yellow-50 px-1 rounded">${escapedFull.substring(idx2, idx2 + escapedChunk.length)}</mark>` + 
+             escapedFull.substring(idx2 + escapedChunk.length);
+    }
+
+    return escapedFull;
+  }
+
+  function scrollToHighlight() {
+    const el = document.getElementById('highlight-target');
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }
+
   // ─── Conversation management ───────────────────────────────
 
   function newChat() {
@@ -557,7 +632,7 @@
         html: msg.role === 'assistant' ? renderMarkdown(msg.content) : '',
         time: new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         typing: false,
-        sources: [],
+        sources: msg.sources || [],
         sourcesOpen: false,
       }));
       sidebarOpen = false;
@@ -754,6 +829,27 @@
                 {/each}
               {/if}
             </div>
+
+            <div class="mt-2 flex items-center justify-between gap-2 border-t border-white/10 px-2 pt-4">
+              <span class="text-[11px] font-bold uppercase tracking-[0.22em] text-slate-400">Documents</span>
+            </div>
+            <div class="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-1">
+              {#if documents.length === 0}
+                <p class="px-2 text-xs text-slate-500">No documents yet</p>
+              {:else}
+                {#each documents as doc (doc.id)}
+                  <button
+                    class="group flex items-center justify-between gap-2 rounded-xl bg-white/[0.03] px-3 py-2 text-left text-xs font-semibold text-slate-300 transition hover:bg-white/[0.06]"
+                    type="button"
+                    title="Insert document name"
+                    on:click={() => insertDocumentName(doc.filename)}
+                  >
+                    <span class="block truncate">{doc.filename}</span>
+                    <span class="font-bold text-sky-400 opacity-0 transition group-hover:opacity-100 text-lg leading-none">+</span>
+                  </button>
+                {/each}
+              {/if}
+            </div>
           </section>
         {/if}
 
@@ -851,6 +947,7 @@
                                 <button
                                   class="inline-flex max-w-[200px] items-center gap-2 truncate rounded-xl border border-white/5 bg-white/[0.02] px-3 py-1.5 text-xs text-slate-300 transition hover:bg-white/[0.06]"
                                   title={source.content}
+                                  on:click={() => openViewer(source)}
                                 >
                                   <svg class="h-3.5 w-3.5 flex-shrink-0 text-sky-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                     <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"></path>
@@ -1315,6 +1412,65 @@
       </div>
     {/each}
   </div>
+
+  {#if viewerOpen && viewerSource}
+    <div class="fixed inset-0 z-[100] flex items-center justify-center bg-[#0b1120]/80 p-4 lg:p-8 backdrop-blur-sm transition-all duration-300">
+      <!-- svelte-ignore a11y-click-events-have-key-events -->
+      <!-- svelte-ignore a11y-no-static-element-interactions -->
+      <div class="absolute inset-0" on:click={closeViewer}></div>
+      
+      <div class="glass-panel relative flex h-full w-full max-w-6xl flex-col overflow-hidden rounded-[32px] bg-[#0f172a]/95 shadow-[0_20px_60px_-15px_rgba(0,0,0,0.8)] border border-white/10 ring-1 ring-white/5">
+        <div class="flex items-center justify-between border-b border-white/10 px-6 py-4 bg-white/[0.02]">
+          <h3 class="text-base font-bold text-white flex items-center gap-3">
+            <svg class="h-5 w-5 text-sky-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"></path>
+              <path d="M14 2v6h6"></path>
+            </svg>
+            {viewerSource.source_file}
+            {#if viewerSource.page}
+              <span class="rounded-full bg-sky-500/10 border border-sky-500/20 px-2.5 py-0.5 text-xs font-semibold text-sky-300">Page {viewerSource.page}</span>
+            {/if}
+          </h3>
+          <button
+            class="grid h-8 w-8 place-items-center rounded-full text-slate-400 hover:bg-rose-500/20 hover:text-rose-300 transition"
+            on:click={closeViewer}
+          >
+            <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+
+        <div class="flex-1 bg-white/[0.01] relative overflow-hidden">
+          {#if viewerSource.source_file.toLowerCase().endsWith('.pdf')}
+            <iframe
+              src={`/api/documents/download/${encodeURIComponent(viewerSource.source_file)}#page=${viewerSource.page || 1}&search=${encodeURIComponent(viewerSource.content.substring(0, 30))}`}
+              class="h-full w-full border-0 bg-white"
+              title="PDF Viewer"
+            ></iframe>
+          {:else}
+            {#if viewerLoading}
+              <div class="absolute inset-0 flex items-center justify-center">
+                <div class="flex items-center gap-3 text-sky-400 bg-sky-400/10 px-6 py-3 rounded-2xl border border-sky-400/20">
+                  <span class="h-5 w-5 animate-spin rounded-full border-2 border-current border-t-transparent"></span>
+                  <span class="font-semibold">Loading document...</span>
+                </div>
+              </div>
+            {:else}
+              <div class="h-full overflow-y-auto p-6 lg:p-10">
+                <div class="max-w-4xl mx-auto">
+                  <pre class="whitespace-pre-wrap font-sans text-[15px] leading-8 text-slate-300">
+                    {@html highlightText(viewerContent, viewerSource.content)}
+                  </pre>
+                </div>
+              </div>
+            {/if}
+          {/if}
+        </div>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>

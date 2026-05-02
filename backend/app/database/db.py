@@ -3,6 +3,7 @@
 import os
 import aiosqlite
 import uuid
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -57,10 +58,15 @@ async def init_db():
                 conversation_id TEXT NOT NULL,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
+                sources TEXT DEFAULT '[]',
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
             )
         """)
+        cursor = await db.execute("PRAGMA table_info(chat_messages)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        if "sources" not in columns:
+            await db.execute("ALTER TABLE chat_messages ADD COLUMN sources TEXT DEFAULT '[]'")
 
         # System Settings table
         await db.execute("""
@@ -270,16 +276,18 @@ async def insert_chat_message(
     conversation_id: str,
     role: str,
     content: str,
+    sources: list[dict] | None = None,
 ) -> str:
     """Insert a chat message and return its ID."""
     msg_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
+    sources_str = json.dumps(sources) if sources else "[]"
 
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            """INSERT INTO chat_messages (id, conversation_id, role, content, created_at)
-               VALUES (?, ?, ?, ?, ?)""",
-            (msg_id, conversation_id, role, content, now),
+            """INSERT INTO chat_messages (id, conversation_id, role, content, sources, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (msg_id, conversation_id, role, content, sources_str, now),
         )
         await db.commit()
 
@@ -302,7 +310,7 @@ async def get_conversation_messages(
         # Subquery: get latest N messages, then order chronologically
         cursor = await db.execute(
             """SELECT * FROM (
-                   SELECT id, conversation_id, role, content, created_at
+                   SELECT id, conversation_id, role, content, sources, created_at
                    FROM chat_messages
                    WHERE conversation_id = ?
                    ORDER BY created_at DESC
@@ -311,7 +319,15 @@ async def get_conversation_messages(
             (conversation_id, limit),
         )
         rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
+        result = []
+        for row in rows:
+            d = dict(row)
+            try:
+                d["sources"] = json.loads(d.get("sources", "[]") or "[]")
+            except Exception:
+                d["sources"] = []
+            result.append(d)
+        return result
 
 
 # ─── User Memories CRUD (Personalization) ────────────────────────

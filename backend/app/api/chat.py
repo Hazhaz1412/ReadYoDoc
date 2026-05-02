@@ -237,9 +237,9 @@ async def chat(request: ChatRequest):
 
                 text_to_save = clean_text or assistant_text
                 if text_to_save:
-                    await db.insert_chat_message(conversation_id, "assistant", text_to_save)
+                    await db.insert_chat_message(conversation_id, "assistant", text_to_save, sources_data)
             elif assistant_text:
-                await db.insert_chat_message(conversation_id, "assistant", assistant_text)
+                await db.insert_chat_message(conversation_id, "assistant", assistant_text, sources_data)
 
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
