@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -16,11 +17,109 @@ from app.models.schemas import (
     SearchResponse,
     SourceChunk,
 )
-from app.services import embedding_service, vector_store, llm_service
+from app.services import embedding_service, vector_store, llm_service, settings_service, memory_service
 from app.database import db
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["Chat"])
+
+
+def _looks_like_vietnamese(text: str) -> bool:
+    """Heuristic language check for short UX responses."""
+    normalized = text.lower()
+    vietnamese_markers = [
+        "xin chao",
+        "xin chào",
+        "toi",
+        "tôi",
+        "ban",
+        "bạn",
+        "giup",
+        "giúp",
+        "duoc gi",
+        "được gì",
+        "the nao",
+        "thế nào",
+        "tai lieu",
+        "tài liệu",
+    ]
+    return any(marker in normalized for marker in vietnamese_markers)
+
+
+def _normalize_query(text: str) -> str:
+    """Normalize a user query for lightweight intent detection."""
+    lowered = text.lower().strip()
+    return re.sub(r"\s+", " ", lowered)
+
+
+def _direct_assistant_reply(query: str) -> str | None:
+    """Return a direct non-RAG reply for greetings and capability questions."""
+    normalized = _normalize_query(query)
+    is_vi = _looks_like_vietnamese(query)
+
+    greeting_patterns = [
+        r"^(hi|hello|hey|good morning|good afternoon|good evening)\b",
+        r"^(xin chào|chào|hello|hi)\b",
+    ]
+    capability_markers = [
+        "ban lam duoc gi",
+        "bạn làm được gì",
+        "ban co the lam gi",
+        "bạn có thể làm gì",
+        "toi co the lam gi voi ban",
+        "tôi có thể làm gì với bạn",
+        "what can you do",
+        "how can you help",
+        "who are you",
+    ]
+
+    if any(re.search(pattern, normalized) for pattern in greeting_patterns) or any(
+        marker in normalized for marker in capability_markers
+    ):
+        if is_vi:
+            return (
+                "Xin chào! Tôi có thể giúp bạn làm việc với kho tài liệu đã tải lên.\n\n"
+                "- Tóm tắt tài liệu\n"
+                "- Trả lời câu hỏi dựa trên nội dung tài liệu\n"
+                "- So sánh, tìm mâu thuẫn, trích ý chính\n"
+                "- Chỉ ra nguồn tài liệu liên quan cho từng câu trả lời\n\n"
+                "Nếu bạn muốn, hãy hỏi trực tiếp về nội dung tài liệu, ví dụ: "
+                "`Tóm tắt tài liệu này`, `Tài liệu nói gì về microservices?`, hoặc "
+                "`Có mâu thuẫn nào giữa các tài liệu không?`"
+            )
+
+        return (
+            "Hello! I can help you work with the documents you uploaded.\n\n"
+            "- Summarize documents\n"
+            "- Answer questions grounded in the documents\n"
+            "- Compare documents and find inconsistencies\n"
+            "- Point to relevant source documents for each answer\n\n"
+            "Try asking something like: `Summarize this document`, "
+            "`What does the document say about microservices?`, or "
+            "`Are there contradictions across these documents?`"
+        )
+
+    return None
+
+
+def _stream_single_message(conversation_id: str, text: str) -> StreamingResponse:
+    """Build an SSE response for direct assistant replies."""
+
+    async def event_stream():
+        yield f"data: {json.dumps({'type': 'meta', 'data': {'conversation_id': conversation_id}})}\n\n"
+        yield f"data: {json.dumps({'type': 'sources', 'data': []})}\n\n"
+        yield f"data: {json.dumps({'type': 'token', 'data': text})}\n\n"
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/chat")
@@ -33,13 +132,6 @@ async def chat(request: ChatRequest):
     - type=token: Individual answer tokens
     - type=done: Signal that generation is complete
     """
-    # Check if we have any documents
-    if vector_store.get_total_chunks() == 0:
-        raise HTTPException(
-            status_code=400,
-            detail="No documents uploaded yet. Please upload documents first.",
-        )
-
     # Resolve conversation
     conversation_id = request.conversation_id
     if not conversation_id:
@@ -58,6 +150,19 @@ async def chat(request: ChatRequest):
 
     # Save the user message immediately
     await db.insert_chat_message(conversation_id, "user", request.query)
+
+    # Handle greetings / assistant capability questions outside RAG.
+    direct_reply = _direct_assistant_reply(request.query)
+    if direct_reply:
+        await db.insert_chat_message(conversation_id, "assistant", direct_reply)
+        return _stream_single_message(conversation_id, direct_reply)
+
+    # Check if we have any documents
+    if vector_store.get_total_chunks() == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="No documents uploaded yet. Please upload documents first.",
+        )
 
     # Auto-title on first message
     conv = await db.get_conversation(conversation_id)
@@ -86,6 +191,22 @@ async def chat(request: ChatRequest):
             detail="No relevant content found in uploaded documents.",
         )
 
+    best_score = max(chunk["relevance_score"] for chunk in similar_chunks)
+    if best_score < settings.MIN_RELEVANCE_SCORE:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "The question does not appear to match the uploaded documents closely enough. "
+                "Try asking about the document content more specifically."
+            ),
+        )
+
+    # Load personalization memories if enabled
+    personalization_on = settings_service.get("PERSONALIZATION_ENABLED")
+    memories = []
+    if personalization_on:
+        memories = await db.get_active_memories()
+
     # Step 3: Stream the answer
     async def event_stream():
         # Send conversation metadata first
@@ -111,13 +232,35 @@ async def chat(request: ChatRequest):
             similar_chunks,
             history=history,
             use_thinking=request.use_thinking,
+            memories=memories if personalization_on else None,
         ):
             full_response.append(token)
             yield f"data: {json.dumps({'type': 'token', 'data': token})}\n\n"
 
-        # Save assistant response to DB
+        # Collect full text and process memories
         assistant_text = "".join(full_response)
-        if assistant_text:
+
+        # Extract and save memories from response
+        if personalization_on and assistant_text:
+            clean_text, new_memories = memory_service.extract_memories_from_response(assistant_text)
+            existing = await db.get_all_memories()
+
+            saved_memories = []
+            for mem_content in new_memories:
+                if not memory_service.is_duplicate_memory(mem_content, existing):
+                    mem_id = await db.insert_memory(mem_content, source="auto")
+                    if mem_id:
+                        saved_memories.append(mem_content)
+                        logger.info(f"🧠 Memory saved: {mem_content[:80]}")
+
+            # Send memory saved events to frontend
+            for mem in saved_memories:
+                yield f"data: {json.dumps({'type': 'memory_saved', 'data': mem})}\n\n"
+
+            # Save the clean text (without memory tags) to DB
+            if clean_text:
+                await db.insert_chat_message(conversation_id, "assistant", clean_text)
+        elif assistant_text:
             await db.insert_chat_message(conversation_id, "assistant", assistant_text)
 
         # Signal completion

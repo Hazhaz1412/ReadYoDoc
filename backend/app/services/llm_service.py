@@ -12,16 +12,30 @@ logger = logging.getLogger(__name__)
 # Longer timeout for LLM generation (can be slow for large context)
 _client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0))
 
-SYSTEM_PROMPT = """You are a helpful AI assistant that answers questions based ONLY on the provided context from the user's documents.
+SYSTEM_PROMPT = """You are a helpful AI assistant for document Q&A.
 
 Rules:
-1. ONLY use information from the provided context to answer.
-2. If the context doesn't contain enough information to answer the question, clearly say: "I don't have enough information in the uploaded documents to answer this question."
-3. Always mention which source document(s) you are referencing in your answer.
-4. Be concise but thorough.
-5. If the user asks in Vietnamese, respond in Vietnamese. If they ask in English, respond in English.
-6. Format your answer with markdown when appropriate (bullet points, bold, code blocks).
-7. You have access to the conversation history. Use it to understand follow-up questions, pronouns like "it", "that", "this", and references to previous answers. Maintain context across the conversation."""
+1. For document-content questions, answer using the provided context from the uploaded documents.
+2. Do not invent facts that are not supported by the retrieved context.
+3. If the retrieved context does not contain enough information to answer a document-content question, clearly say: "I don't have enough information in the uploaded documents to answer this question."
+4. When you answer from the documents, mention which source document(s) you are relying on.
+5. Be concise but thorough.
+6. If the user asks in Vietnamese, respond in Vietnamese. If they ask in English, respond in English.
+7. Format your answer with markdown when appropriate (bullet points, bold, code blocks).
+8. You have access to the conversation history. Use it to understand follow-up questions, pronouns like "it", "that", "this", and references to previous answers. Maintain context across the conversation."""
+
+MEMORY_INSTRUCTION = """
+## Memory Detection
+If the user explicitly asks you to remember, save, or note something about themselves (e.g. "nhớ rằng...", "lưu lại...", "remember that..."), OR if you detect a strong repeated preference pattern across the conversation, wrap the personalization fact in a special tag:
+<memory_save>concise description of the preference or fact</memory_save>
+
+Rules for memory:
+- Only save genuinely useful personalization facts (response style, language preference, expertise level, personal context).
+- Do NOT save conversation-specific or document-specific data.
+- Do NOT save something already listed in the existing memories below.
+- Keep each memory under 100 characters, in the same language the user used.
+- Place the tag at the very end of your response, after your main answer.
+- You can save multiple memories by using multiple tags."""
 
 
 def _build_prompt(
@@ -29,6 +43,7 @@ def _build_prompt(
     context_chunks: list[dict],
     history: list[dict] | None = None,
     use_thinking: bool = False,
+    memories: list[dict] | None = None,
 ) -> list[dict]:
     """Build the chat messages with retrieved context and conversation history.
 
@@ -37,10 +52,13 @@ def _build_prompt(
         context_chunks: Retrieved document chunks with metadata.
         history: Previous conversation messages (role + content dicts).
         use_thinking: Whether to enable qwen3.5 thinking mode.
+        memories: Active user memories for personalization.
 
     Returns:
         List of message dicts for the Ollama chat API.
     """
+    from app.services.memory_service import format_memories_for_prompt
+
     # Format context with source citations
     context_parts = []
     for i, chunk in enumerate(context_chunks, 1):
@@ -65,7 +83,16 @@ User question: {query}"""
     if not use_thinking:
         user_message += " /no_think"
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    # Build system prompt with optional personalization
+    system_content = SYSTEM_PROMPT
+    if memories:
+        formatted = format_memories_for_prompt(memories)
+        system_content += f"\n\n## Personalization\nYou know the following about this user. Use these to personalize your responses:\n{formatted}"
+        system_content += MEMORY_INSTRUCTION
+    else:
+        system_content += MEMORY_INSTRUCTION
+
+    messages = [{"role": "system", "content": system_content}]
 
     # Inject conversation history (oldest first) between system and current question
     if history:
@@ -82,6 +109,7 @@ async def generate_answer_stream(
     context_chunks: list[dict],
     history: list[dict] | None = None,
     use_thinking: bool = False,
+    memories: list[dict] | None = None,
 ) -> AsyncGenerator[str, None]:
     """Stream answer tokens from the LLM.
 
@@ -90,11 +118,12 @@ async def generate_answer_stream(
         context_chunks: Retrieved context chunks.
         history: Previous conversation messages for memory.
         use_thinking: Enable thinking mode for complex questions.
+        memories: Active user memories for personalization.
 
     Yields:
         Individual text tokens as they're generated.
     """
-    messages = _build_prompt(query, context_chunks, history, use_thinking)
+    messages = _build_prompt(query, context_chunks, history, use_thinking, memories)
 
     url = f"{settings.OLLAMA_BASE_URL}/api/chat"
     payload = {
@@ -137,6 +166,7 @@ async def generate_answer(
     context_chunks: list[dict],
     history: list[dict] | None = None,
     use_thinking: bool = False,
+    memories: list[dict] | None = None,
 ) -> str:
     """Generate a complete answer (non-streaming).
 
@@ -145,12 +175,13 @@ async def generate_answer(
         context_chunks: Retrieved context chunks.
         history: Previous conversation messages for memory.
         use_thinking: Enable thinking mode.
+        memories: Active user memories for personalization.
 
     Returns:
         The complete answer string.
     """
     parts = []
-    async for token in generate_answer_stream(query, context_chunks, history, use_thinking):
+    async for token in generate_answer_stream(query, context_chunks, history, use_thinking, memories):
         parts.append(token)
     return "".join(parts)
 

@@ -48,9 +48,17 @@
     VISION_ENABLED: true,
     MEMORY_MAX_MESSAGES: 20,
     CHUNK_SIZE: 500,
-    CHUNK_OVERLAP: 50
+    CHUNK_OVERLAP: 50,
+    PERSONALIZATION_ENABLED: true
   };
   let isSavingSettings = false;
+
+  // Personalization / Memory
+  let memories = [];
+  let isLoadingMemories = false;
+  let newMemoryText = '';
+  let editingMemoryId = null;
+  let editingMemoryText = '';
 
   $: readyDocuments = documents.filter((doc) => doc.status === 'ready').length;
   $: processingDocuments = documents.filter((doc) => doc.status === 'processing').length;
@@ -61,6 +69,7 @@
     loadDocuments();
     loadSettings();
     loadConversations();
+    loadMemories();
     connectDocumentStream();
     checkHealth();
     healthTimer = setInterval(checkHealth, 30000);
@@ -114,6 +123,97 @@
     } finally {
       isSavingSettings = false;
     }
+  }
+
+  // ─── Memory management ──────────────────────────────────
+
+  async function loadMemories() {
+    isLoadingMemories = true;
+    try {
+      const res = await fetch('/api/memories');
+      if (res.ok) {
+        const data = await res.json();
+        memories = data.memories || [];
+      }
+    } catch (err) {
+      console.error('Failed to load memories', err);
+    } finally {
+      isLoadingMemories = false;
+    }
+  }
+
+  async function addMemory() {
+    const text = newMemoryText.trim();
+    if (!text) return;
+    try {
+      const res = await fetch('/api/memories', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: text })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: 'Failed' }));
+        throw new Error(err.detail || 'Failed to add memory');
+      }
+      newMemoryText = '';
+      notify('Memory added', 'success');
+      await loadMemories();
+    } catch (err) {
+      notify(err.message, 'error');
+    }
+  }
+
+  async function updateMemory(id, updates) {
+    try {
+      const res = await fetch(`/api/memories/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates)
+      });
+      if (!res.ok) throw new Error('Failed to update memory');
+      editingMemoryId = null;
+      editingMemoryText = '';
+      await loadMemories();
+    } catch (err) {
+      notify(err.message, 'error');
+    }
+  }
+
+  async function deleteMemory(id) {
+    try {
+      const res = await fetch(`/api/memories/${id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('Failed to delete memory');
+      notify('Memory removed', 'success');
+      await loadMemories();
+    } catch (err) {
+      notify(err.message, 'error');
+    }
+  }
+
+  async function clearAllMemories() {
+    if (!window.confirm('Delete all memories? This cannot be undone.')) return;
+    try {
+      const res = await fetch('/api/memories', { method: 'DELETE' });
+      if (!res.ok) throw new Error('Failed to clear memories');
+      notify('All memories cleared', 'success');
+      await loadMemories();
+    } catch (err) {
+      notify(err.message, 'error');
+    }
+  }
+
+  function startEditMemory(mem) {
+    editingMemoryId = mem.id;
+    editingMemoryText = mem.content;
+  }
+
+  function cancelEditMemory() {
+    editingMemoryId = null;
+    editingMemoryText = '';
+  }
+
+  function stripMemoryTags(text) {
+    return text.replace(/<memory_save>.*?<\/memory_save>/gs, '').replace(/\n{3,}/g, '\n\n').trim();
   }
 
   function connectDocumentStream() {
@@ -356,13 +456,18 @@
           if (payload.type === 'done') {
             doneSignal = true;
           }
+
+          if (payload.type === 'memory_saved') {
+            notify(`🧠 Saved: "${payload.data}"`, 'success');
+            loadMemories();
+          }
         }
       }
 
       patchAssistantMessage(assistantMessage.id, {
         typing: false,
-        text: fullText,
-        html: fullText ? renderMarkdown(fullText) : '<p>No answer returned.</p>',
+        text: stripMemoryTags(fullText),
+        html: fullText ? renderMarkdown(stripMemoryTags(fullText)) : '<p>No answer returned.</p>',
         sources,
         sourcesOpen: false,
       });
@@ -974,6 +1079,154 @@
                 <input type="number" bind:value={systemSettings.CHUNK_OVERLAP} class="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white focus:border-sky-400/50 focus:outline-none" />
               </div>
             </div>
+          </div>
+
+          <!-- Personalization Section -->
+          <div class="glass-panel flex flex-col gap-5 rounded-[24px] p-6">
+            <div class="flex items-center justify-between border-b border-white/5 pb-3">
+              <div class="flex items-center gap-3">
+                <span class="text-lg">🧠</span>
+                <h3 class="text-sm font-bold uppercase tracking-[0.1em] text-slate-400">Personalization</h3>
+              </div>
+              <div class="flex items-center gap-3">
+                <span class="text-xs font-medium text-slate-400">{systemSettings.PERSONALIZATION_ENABLED ? 'On' : 'Off'}</span>
+                <label class="relative flex items-center cursor-pointer">
+                  <input type="checkbox" bind:checked={systemSettings.PERSONALIZATION_ENABLED} class="sr-only peer">
+                  <div class="w-9 h-5 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-violet-500"></div>
+                </label>
+              </div>
+            </div>
+
+            <p class="text-xs leading-5 text-slate-400">
+              When enabled, the AI will remember your preferences and habits across all conversations. It can auto-detect patterns or save facts when you ask (e.g. "Remember that I prefer bullet points").
+            </p>
+
+            {#if systemSettings.PERSONALIZATION_ENABLED}
+              <!-- Add new memory -->
+              <div class="flex gap-2">
+                <input
+                  type="text"
+                  bind:value={newMemoryText}
+                  placeholder="Add a memory manually... (e.g. I prefer concise answers)"
+                  maxlength="500"
+                  class="flex-1 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder-slate-500 focus:border-violet-400/50 focus:outline-none"
+                  on:keydown={(e) => { if (e.key === 'Enter') addMemory(); }}
+                />
+                <button
+                  class="rounded-xl bg-violet-500/20 px-4 py-2 text-sm font-bold text-violet-200 transition hover:bg-violet-500/30 disabled:opacity-50"
+                  on:click={addMemory}
+                  disabled={!newMemoryText.trim()}
+                >
+                  Add
+                </button>
+              </div>
+
+              <!-- Memory list -->
+              {#if isLoadingMemories}
+                <div class="flex items-center justify-center py-6">
+                  <span class="text-xs text-slate-400">Loading memories...</span>
+                </div>
+              {:else if memories.length === 0}
+                <div class="rounded-[18px] border border-dashed border-white/10 bg-white/[0.02] px-5 py-6 text-center text-sm leading-7 text-slate-400">
+                  No memories yet. Chat with the AI and ask it to remember things, or add them manually above.
+                </div>
+              {:else}
+                <div class="flex flex-col gap-2 max-h-80 overflow-y-auto pr-1">
+                  {#each memories as mem (mem.id)}
+                    <div class="group flex items-start gap-3 rounded-xl bg-white/[0.02] p-3 transition hover:bg-white/[0.04]">
+                      {#if editingMemoryId === mem.id}
+                        <!-- Editing mode -->
+                        <div class="flex-1 flex flex-col gap-2">
+                          <input
+                            type="text"
+                            bind:value={editingMemoryText}
+                            maxlength="500"
+                            class="w-full rounded-lg border border-violet-400/30 bg-white/5 px-3 py-1.5 text-sm text-white focus:border-violet-400/50 focus:outline-none"
+                            on:keydown={(e) => {
+                              if (e.key === 'Enter') updateMemory(mem.id, { content: editingMemoryText });
+                              if (e.key === 'Escape') cancelEditMemory();
+                            }}
+                          />
+                          <div class="flex gap-2">
+                            <button
+                              class="rounded-lg bg-violet-500/20 px-3 py-1 text-xs font-semibold text-violet-200 hover:bg-violet-500/30"
+                              on:click={() => updateMemory(mem.id, { content: editingMemoryText })}
+                            >Save</button>
+                            <button
+                              class="rounded-lg bg-white/5 px-3 py-1 text-xs font-semibold text-slate-400 hover:bg-white/10"
+                              on:click={cancelEditMemory}
+                            >Cancel</button>
+                          </div>
+                        </div>
+                      {:else}
+                        <!-- Display mode -->
+                        <label class="relative mt-0.5 flex cursor-pointer items-center">
+                          <input
+                            type="checkbox"
+                            checked={mem.active}
+                            on:change={() => updateMemory(mem.id, { active: !mem.active })}
+                            class="sr-only peer"
+                          />
+                          <div class="h-4 w-4 rounded border border-white/20 bg-white/5 transition peer-checked:border-violet-400 peer-checked:bg-violet-500/30">
+                            {#if mem.active}
+                              <svg class="h-4 w-4 text-violet-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+                                <polyline points="20 6 9 17 4 12"></polyline>
+                              </svg>
+                            {/if}
+                          </div>
+                        </label>
+
+                        <div class="flex-1 min-w-0">
+                          <p class="text-sm leading-6 {mem.active ? 'text-slate-200' : 'text-slate-500 line-through'}">
+                            {mem.content}
+                          </p>
+                          <div class="mt-1 flex items-center gap-2">
+                            <span class="inline-flex items-center gap-1 rounded-md bg-white/5 px-1.5 py-0.5 text-[10px] font-semibold {mem.source === 'auto' ? 'text-sky-400' : 'text-amber-300'}">
+                              {mem.source === 'auto' ? '🤖 Auto' : '✍️ Manual'}
+                            </span>
+                            <span class="text-[10px] text-slate-600">{new Date(mem.created_at).toLocaleDateString()}</span>
+                          </div>
+                        </div>
+
+                        <div class="flex gap-1 opacity-0 transition group-hover:opacity-100">
+                          <button
+                            class="grid h-7 w-7 place-items-center rounded-lg text-slate-500 transition hover:bg-white/10 hover:text-slate-200"
+                            title="Edit memory"
+                            on:click={() => startEditMemory(mem)}
+                          >
+                            <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                              <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"></path>
+                              <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                            </svg>
+                          </button>
+                          <button
+                            class="grid h-7 w-7 place-items-center rounded-lg text-slate-500 transition hover:bg-rose-500/10 hover:text-rose-400"
+                            title="Delete memory"
+                            on:click={() => deleteMemory(mem.id)}
+                          >
+                            <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                              <path d="M18 6L6 18"></path>
+                              <path d="M6 6l12 12"></path>
+                            </svg>
+                          </button>
+                        </div>
+                      {/if}
+                    </div>
+                  {/each}
+                </div>
+
+                <!-- Clear all -->
+                <div class="flex items-center justify-between pt-2 border-t border-white/5">
+                  <span class="text-xs text-slate-500">{memories.length} / 50 memories</span>
+                  <button
+                    class="text-xs font-semibold text-rose-400/70 transition hover:text-rose-300"
+                    on:click={clearAllMemories}
+                  >
+                    Clear all memories
+                  </button>
+                </div>
+              {/if}
+            {/if}
           </div>
 
           <div class="flex items-center justify-between">

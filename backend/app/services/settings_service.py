@@ -24,6 +24,7 @@ async def load_settings():
         "MEMORY_MAX_MESSAGES": int(db_settings.get("MEMORY_MAX_MESSAGES", env_settings.MEMORY_MAX_MESSAGES)),
         "CHUNK_SIZE": int(db_settings.get("CHUNK_SIZE", env_settings.CHUNK_SIZE)),
         "CHUNK_OVERLAP": int(db_settings.get("CHUNK_OVERLAP", env_settings.CHUNK_OVERLAP)),
+        "PERSONALIZATION_ENABLED": db_settings.get("PERSONALIZATION_ENABLED", "true").lower() == "true",
     }
     logger.info("⚙️  System settings loaded from database")
 

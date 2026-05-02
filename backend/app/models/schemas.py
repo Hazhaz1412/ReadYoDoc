@@ -96,6 +96,42 @@ class ConversationDeleteResponse(BaseModel):
     message: str
 
 
+# ─── Memory / Personalization Schemas ────────────────────────────
+
+class MemoryResponse(BaseModel):
+    """Response model for a single user memory."""
+    id: str
+    content: str
+    source: str = "auto"
+    active: bool = True
+    created_at: str
+    updated_at: str
+
+
+class MemoryListResponse(BaseModel):
+    """Response for listing user memories."""
+    memories: list[MemoryResponse]
+    total: int
+    limit: int = 50
+
+
+class MemoryCreateRequest(BaseModel):
+    """Request to create a memory manually."""
+    content: str = Field(..., min_length=1, max_length=500, description="Memory content")
+
+
+class MemoryUpdateRequest(BaseModel):
+    """Request to update a memory."""
+    content: Optional[str] = Field(None, min_length=1, max_length=500)
+    active: Optional[bool] = None
+
+
+class MemoryDeleteResponse(BaseModel):
+    """Response after deleting memory/memories."""
+    deleted: bool
+    message: str
+
+
 # ─── Health Schemas ─────────────────────────────────────────────
 
 class HealthResponse(BaseModel):
@@ -119,3 +155,4 @@ class SettingsUpdate(BaseModel):
     MEMORY_MAX_MESSAGES: Optional[int] = Field(None, ge=0, le=100)
     CHUNK_SIZE: Optional[int] = Field(None, ge=100, le=4000)
     CHUNK_OVERLAP: Optional[int] = Field(None, ge=0, le=1000)
+    PERSONALIZATION_ENABLED: Optional[bool] = None

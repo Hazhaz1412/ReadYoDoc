@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse
 from app.config import settings
 from app.database import db
 from app.models.schemas import HealthResponse, SettingsUpdate
-from app.api import documents, chat
+from app.api import documents, chat, memory
 from app.services import vector_store, llm_service, embedding_service, vision_service, settings_service
 
 # Configure logging
@@ -90,6 +90,7 @@ app.add_middleware(
 # Include API routers
 app.include_router(documents.router)
 app.include_router(chat.router)
+app.include_router(memory.router)
 
 
 # Health check

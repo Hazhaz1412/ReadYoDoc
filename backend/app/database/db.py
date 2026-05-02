@@ -69,6 +69,18 @@ async def init_db():
                 value TEXT NOT NULL
             )
         """)
+
+        # User Memories table (personalization)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS user_memories (
+                id TEXT PRIMARY KEY,
+                content TEXT NOT NULL,
+                source TEXT DEFAULT 'auto',
+                active INTEGER DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
         await db.commit()
 
 
@@ -300,4 +312,109 @@ async def get_conversation_messages(
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+
+# ─── User Memories CRUD (Personalization) ────────────────────────
+
+MAX_MEMORIES = 50
+
+
+async def insert_memory(content: str, source: str = "auto") -> str:
+    """Insert a new user memory. Returns its ID or empty string if limit reached."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cursor = await conn.execute("SELECT COUNT(*) FROM user_memories")
+        count = (await cursor.fetchone())[0]
+        if count >= MAX_MEMORIES:
+            return ""
+
+        mem_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        await conn.execute(
+            """INSERT INTO user_memories (id, content, source, active, created_at, updated_at)
+               VALUES (?, ?, ?, 1, ?, ?)""",
+            (mem_id, content, source, now, now),
+        )
+        await conn.commit()
+    return mem_id
+
+
+async def get_active_memories() -> list[dict]:
+    """Get all active memories for prompt injection."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            "SELECT * FROM user_memories WHERE active = 1 ORDER BY created_at ASC"
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def get_all_memories() -> list[dict]:
+    """Get all memories including disabled ones."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            "SELECT * FROM user_memories ORDER BY created_at DESC"
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def update_memory(
+    mem_id: str,
+    content: str | None = None,
+    active: bool | None = None,
+) -> bool:
+    """Update a memory's content and/or active status."""
+    parts, params = [], []
+    now = datetime.now(timezone.utc).isoformat()
+
+    if content is not None:
+        parts.append("content = ?")
+        params.append(content)
+    if active is not None:
+        parts.append("active = ?")
+        params.append(1 if active else 0)
+
+    if not parts:
+        return False
+
+    parts.append("updated_at = ?")
+    params.append(now)
+    params.append(mem_id)
+
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cursor = await conn.execute(
+            f"UPDATE user_memories SET {', '.join(parts)} WHERE id = ?",
+            params,
+        )
+        await conn.commit()
+        return cursor.rowcount > 0
+
+
+async def delete_memory(mem_id: str) -> bool:
+    """Delete a single memory."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cursor = await conn.execute(
+            "DELETE FROM user_memories WHERE id = ?", (mem_id,)
+        )
+        await conn.commit()
+        return cursor.rowcount > 0
+
+
+async def clear_all_memories() -> int:
+    """Delete all memories. Returns count deleted."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cursor = await conn.execute("DELETE FROM user_memories")
+        await conn.commit()
+        return cursor.rowcount
+
+
+async def get_memory_count() -> int:
+    """Get total number of memories."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cursor = await conn.execute("SELECT COUNT(*) FROM user_memories")
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
 
