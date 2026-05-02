@@ -1,5 +1,6 @@
 """Vector store service — ChromaDB operations for storing and querying embeddings."""
 
+import os
 import chromadb
 import logging
 from pathlib import Path
@@ -16,10 +17,16 @@ def _get_client() -> chromadb.ClientAPI:
     """Get or create the ChromaDB persistent client."""
     global _chroma_client
     if _chroma_client is None:
-        db_path = Path(settings.CHROMA_DB_PATH).resolve()
-        db_path.mkdir(parents=True, exist_ok=True)
-        _chroma_client = chromadb.PersistentClient(path=str(db_path))
-        logger.info(f"ChromaDB initialized at {db_path}")
+        chroma_host = os.getenv("CHROMA_HOST")
+        if chroma_host:
+            chroma_port = int(os.getenv("CHROMA_PORT", "8000"))
+            _chroma_client = chromadb.HttpClient(host=chroma_host, port=chroma_port)
+            logger.info(f"ChromaDB connected via HTTP to {chroma_host}:{chroma_port}")
+        else:
+            db_path = Path(settings.CHROMA_DB_PATH).resolve()
+            db_path.mkdir(parents=True, exist_ok=True)
+            _chroma_client = chromadb.PersistentClient(path=str(db_path))
+            logger.info(f"ChromaDB initialized locally at {db_path}")
     return _chroma_client
 
 

@@ -19,6 +19,16 @@ services:
       timeout: 5s
       retries: 5
 
+  # ── ChromaDB: Vector Store ───────────────────────────────────────
+  chroma:
+    image: docker.io/chromadb/chroma:latest
+    container_name: rag-chroma-server
+    volumes:
+      - rag-chroma:/chroma/chroma
+    ports:
+      - "8001:8000"
+    restart: unless-stopped
+
   # ── FastAPI: Web API only, never blocks on heavy processing ──────
   rag-app:
     container_name: rag-assistant
@@ -50,9 +60,13 @@ services:
       - MEMORY_MAX_MESSAGES=20
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - CHROMA_HOST=chroma
+      - CHROMA_PORT=8000
     depends_on:
       redis:
         condition: service_healthy
+      chroma:
+        condition: service_started
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import httpx; print(httpx.get('http://localhost:8000/api/health').status_code)"]
@@ -88,9 +102,13 @@ services:
       - VISION_ENABLED=true
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - CHROMA_HOST=chroma
+      - CHROMA_PORT=8000
     depends_on:
       redis:
         condition: service_healthy
+      chroma:
+        condition: service_started
     restart: unless-stopped
 
 volumes:
