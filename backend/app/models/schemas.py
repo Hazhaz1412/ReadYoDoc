@@ -15,6 +15,8 @@ class DocumentResponse(BaseModel):
     file_size: int
     chunk_count: int
     status: str  # "processing", "ready", "error"
+    status_detail: str = ""
+    progress: int = 0
     upload_date: str
     error_message: Optional[str] = None
 
@@ -39,6 +41,8 @@ class ChatRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=2000, description="The question to ask")
     top_k: int = Field(default=5, ge=1, le=20, description="Number of context chunks to retrieve")
     use_thinking: bool = Field(default=False, description="Enable qwen3.5 thinking mode for complex queries")
+    conversation_id: Optional[str] = Field(default=None, description="Conversation ID for memory continuity")
+    memory_limit: int = Field(default=20, ge=0, le=100, description="Max messages to include as context history")
 
 
 class SourceChunk(BaseModel):
@@ -69,6 +73,29 @@ class SearchResponse(BaseModel):
     query: str
 
 
+# ─── Conversation Schemas ───────────────────────────────────────
+
+class ConversationResponse(BaseModel):
+    """Response model for a single conversation."""
+    id: str
+    title: str
+    created_at: str
+    updated_at: str
+    message_count: int = 0
+
+
+class ConversationListResponse(BaseModel):
+    """Response for listing conversations."""
+    conversations: list[ConversationResponse]
+
+
+class ConversationDeleteResponse(BaseModel):
+    """Response after deleting a conversation."""
+    id: str
+    deleted: bool
+    message: str
+
+
 # ─── Health Schemas ─────────────────────────────────────────────
 
 class HealthResponse(BaseModel):
@@ -77,5 +104,7 @@ class HealthResponse(BaseModel):
     ollama_connected: bool
     llm_model: str
     embedding_model: str
+    vision_model: str
+    vision_enabled: bool
     documents_count: int
     chroma_collection: str

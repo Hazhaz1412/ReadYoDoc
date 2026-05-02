@@ -19,15 +19,22 @@ Rules:
 3. Always mention which source document(s) you are referencing in your answer.
 4. Be concise but thorough.
 5. If the user asks in Vietnamese, respond in Vietnamese. If they ask in English, respond in English.
-6. Format your answer with markdown when appropriate (bullet points, bold, code blocks)."""
+6. Format your answer with markdown when appropriate (bullet points, bold, code blocks).
+7. You have access to the conversation history. Use it to understand follow-up questions, pronouns like "it", "that", "this", and references to previous answers. Maintain context across the conversation."""
 
 
-def _build_prompt(query: str, context_chunks: list[dict], use_thinking: bool = False) -> list[dict]:
-    """Build the chat messages with retrieved context.
+def _build_prompt(
+    query: str,
+    context_chunks: list[dict],
+    history: list[dict] | None = None,
+    use_thinking: bool = False,
+) -> list[dict]:
+    """Build the chat messages with retrieved context and conversation history.
 
     Args:
         query: User's question.
         context_chunks: Retrieved document chunks with metadata.
+        history: Previous conversation messages (role + content dicts).
         use_thinking: Whether to enable qwen3.5 thinking mode.
 
     Returns:
@@ -57,15 +64,22 @@ User question: {query}"""
     if not use_thinking:
         user_message += " /no_think"
 
-    return [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": user_message},
-    ]
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+    # Inject conversation history (oldest first) between system and current question
+    if history:
+        for msg in history:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+
+    messages.append({"role": "user", "content": user_message})
+
+    return messages
 
 
 async def generate_answer_stream(
     query: str,
     context_chunks: list[dict],
+    history: list[dict] | None = None,
     use_thinking: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Stream answer tokens from the LLM.
@@ -73,12 +87,13 @@ async def generate_answer_stream(
     Args:
         query: User's question.
         context_chunks: Retrieved context chunks.
+        history: Previous conversation messages for memory.
         use_thinking: Enable thinking mode for complex questions.
 
     Yields:
         Individual text tokens as they're generated.
     """
-    messages = _build_prompt(query, context_chunks, use_thinking)
+    messages = _build_prompt(query, context_chunks, history, use_thinking)
 
     url = f"{settings.OLLAMA_BASE_URL}/api/chat"
     payload = {
@@ -119,6 +134,7 @@ async def generate_answer_stream(
 async def generate_answer(
     query: str,
     context_chunks: list[dict],
+    history: list[dict] | None = None,
     use_thinking: bool = False,
 ) -> str:
     """Generate a complete answer (non-streaming).
@@ -126,13 +142,14 @@ async def generate_answer(
     Args:
         query: User's question.
         context_chunks: Retrieved context chunks.
+        history: Previous conversation messages for memory.
         use_thinking: Enable thinking mode.
 
     Returns:
         The complete answer string.
     """
     parts = []
-    async for token in generate_answer_stream(query, context_chunks, use_thinking):
+    async for token in generate_answer_stream(query, context_chunks, history, use_thinking):
         parts.append(token)
     return "".join(parts)
 

@@ -1,0 +1,101 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body {
+    @apply h-full bg-ink-950 text-slate-50 antialiased;
+  }
+
+  body {
+    background:
+      radial-gradient(circle at top left, rgba(101, 210, 255, 0.14), transparent 32%),
+      radial-gradient(circle at 80% 16%, rgba(255, 186, 102, 0.1), transparent 24%),
+      linear-gradient(180deg, #07101d 0%, #05111f 100%);
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(148, 163, 184, 0.35) transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: rgba(148, 163, 184, 0.24);
+    border-radius: 999px;
+  }
+}
+
+@layer components {
+  .glass-panel {
+    @apply border border-white/10 bg-white/[0.045] shadow-soft backdrop-blur-xl;
+  }
+
+  .panel-title {
+    @apply text-sm font-semibold tracking-tight text-slate-50;
+  }
+
+  .panel-kicker {
+    @apply text-[11px] font-bold uppercase tracking-[0.22em] text-sky-300;
+  }
+
+  .signal-dot {
+    @apply h-2.5 w-2.5 rounded-full bg-slate-500 shadow-[0_0_0_5px_rgba(148,163,184,0.12)];
+  }
+
+  .signal-dot.connected {
+    @apply bg-emerald-300 shadow-[0_0_0_5px_rgba(110,231,183,0.16)];
+  }
+
+  .signal-dot.error {
+    @apply bg-rose-300 shadow-[0_0_0_5px_rgba(253,164,175,0.16)];
+  }
+
+  .signal-dot.connecting {
+    @apply animate-pulse-soft bg-amber-300 shadow-[0_0_0_5px_rgba(252,211,77,0.16)];
+  }
+
+  .message-markdown {
+    @apply space-y-3 text-sm leading-7 text-slate-100;
+  }
+
+  .message-markdown p {
+    @apply my-0;
+  }
+
+  .message-markdown h2,
+  .message-markdown h3,
+  .message-markdown h4 {
+    @apply mt-3 text-white;
+  }
+
+  .message-markdown ul,
+  .message-markdown ol {
+    @apply my-0 list-disc space-y-1 pl-5;
+  }
+
+  .message-markdown blockquote {
+    @apply border-l-2 border-sky-300/40 pl-3 text-slate-300;
+  }
+
+  .message-markdown pre {
+    @apply overflow-x-auto rounded-2xl border border-white/10 bg-black/30 p-4 font-mono text-xs;
+  }
+
+  .message-markdown code {
+    @apply rounded bg-white/5 px-1.5 py-0.5 font-mono text-xs;
+  }
+
+  .message-markdown pre code {
+    @apply bg-transparent p-0;
+  }
+}

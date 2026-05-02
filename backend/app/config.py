@@ -17,6 +17,10 @@ class Settings:
     LLM_MODEL: str = os.getenv("LLM_MODEL", "qwen3.5:9b")
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "bge-m3")
 
+    # Vision
+    VISION_MODEL: str = os.getenv("VISION_MODEL", "qwen3-vl:8b")
+    VISION_ENABLED: bool = os.getenv("VISION_ENABLED", "true").lower() == "true"
+
     # ChromaDB
     CHROMA_DB_PATH: str = os.getenv("CHROMA_DB_PATH", "./chroma_db")
     CHROMA_COLLECTION: str = os.getenv("CHROMA_COLLECTION", "documents")
@@ -42,6 +46,10 @@ class Settings:
     # RAG settings
     TOP_K_RESULTS: int = 5
     LLM_TEMPERATURE: float = 0.3
+
+    # Memory
+    MEMORY_MAX_MESSAGES: int = int(os.getenv("MEMORY_MAX_MESSAGES", "20"))
+    MEMORY_HARD_LIMIT: int = 100  # Absolute max regardless of user setting
 
 
 settings = Settings()

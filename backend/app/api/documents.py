@@ -1,10 +1,9 @@
 """Document management API endpoints."""
 
 import os
-import shutil
 import logging
 from pathlib import Path
-from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 
 from app.config import settings
 from app.models.schemas import (
@@ -14,6 +13,7 @@ from app.models.schemas import (
 )
 from app.database import db
 from app.services import document_service, vector_store
+from app.services.realtime_service import document_events, serialize_document
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/documents", tags=["Documents"])
@@ -82,17 +82,15 @@ async def upload_documents(
             doc_id,
         )
 
-        responses.append(
-            DocumentResponse(
-                id=doc_id,
-                filename=file.filename or "unknown",
-                file_type=ext,
-                file_size=len(contents),
-                chunk_count=0,
-                status="processing",
-                upload_date="now",
+        doc = await db.get_document(doc_id)
+        if doc:
+            responses.append(DocumentResponse(**serialize_document(doc)))
+            await document_events.broadcast(
+                {
+                    "type": "document.created",
+                    "document": serialize_document(doc),
+                }
             )
-        )
 
     return responses
 
@@ -102,19 +100,7 @@ async def list_documents():
     """List all uploaded documents with their processing status."""
     docs = await db.get_all_documents()
     return DocumentListResponse(
-        documents=[
-            DocumentResponse(
-                id=d["id"],
-                filename=d["filename"],
-                file_type=d["file_type"],
-                file_size=d["file_size"],
-                chunk_count=d["chunk_count"],
-                status=d["status"],
-                upload_date=d["upload_date"],
-                error_message=d.get("error_message"),
-            )
-            for d in docs
-        ],
+        documents=[DocumentResponse(**serialize_document(d)) for d in docs],
         total=len(docs),
     )
 
@@ -126,16 +112,7 @@ async def get_document(doc_id: str):
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    return DocumentResponse(
-        id=doc["id"],
-        filename=doc["filename"],
-        file_type=doc["file_type"],
-        file_size=doc["file_size"],
-        chunk_count=doc["chunk_count"],
-        status=doc["status"],
-        upload_date=doc["upload_date"],
-        error_message=doc.get("error_message"),
-    )
+    return DocumentResponse(**serialize_document(doc))
 
 
 @router.delete("/{doc_id}", response_model=DocumentDeleteResponse)
@@ -155,9 +132,37 @@ async def delete_document(doc_id: str):
 
     # Remove from database
     await db.delete_document(doc_id)
+    await document_events.broadcast(
+        {
+            "type": "document.deleted",
+            "document_id": doc_id,
+        }
+    )
 
     return DocumentDeleteResponse(
         id=doc_id,
         deleted=True,
         message=f"Deleted document '{doc['filename']}' and {chunks_deleted} chunks",
     )
+
+
+@router.websocket("/ws")
+async def documents_ws(websocket: WebSocket):
+    """Push document list updates to connected clients."""
+    await document_events.connect(websocket)
+    try:
+        docs = await db.get_all_documents()
+        await websocket.send_json(
+            {
+                "type": "documents.snapshot",
+                "documents": [serialize_document(doc) for doc in docs],
+                "total": len(docs),
+            }
+        )
+
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await document_events.disconnect(websocket)

@@ -93,16 +93,18 @@ async def health_check():
     )
 
 
-# Serve frontend static files — check container path first, then local dev path
+# Serve built frontend assets — container path first, then local dev build output
 FRONTEND_DIR = Path("/frontend")
 if not FRONTEND_DIR.exists():
-    FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
+    FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
 
 if FRONTEND_DIR.exists():
-    app.mount("/css", StaticFiles(directory=str(FRONTEND_DIR / "css")), name="css")
-    app.mount("/js", StaticFiles(directory=str(FRONTEND_DIR / "js")), name="js")
+    app_dir = FRONTEND_DIR / "_app"
+    if app_dir.exists():
+        app.mount("/_app", StaticFiles(directory=str(app_dir)), name="app-assets")
 
     @app.get("/", include_in_schema=False)
-    async def serve_frontend():
-        """Serve the frontend SPA."""
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_frontend(full_path: str = ""):
+        """Serve the built frontend SPA."""
         return FileResponse(str(FRONTEND_DIR / "index.html"))
