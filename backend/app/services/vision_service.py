@@ -110,7 +110,7 @@ async def check_vision_model() -> bool:
         return False
     try:
         url = f"{settings.OLLAMA_BASE_URL}/api/tags"
-        response = await _client.get(url)
+        response = await _client.get(url, timeout=5.0)
         response.raise_for_status()
         models = response.json().get("models", [])
         model_names = [m["name"] for m in models]

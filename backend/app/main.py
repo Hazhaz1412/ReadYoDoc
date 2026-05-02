@@ -1,5 +1,4 @@
-"""FastAPI application entry point."""
-
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -14,6 +13,7 @@ from app.database import db
 from app.models.schemas import HealthResponse, SettingsUpdate
 from app.api import documents, chat, memory
 from app.services import vector_store, llm_service, embedding_service, vision_service, settings_service
+from app.services.realtime_service import redis_subscriber
 
 # Configure logging
 logging.basicConfig(
@@ -64,9 +64,19 @@ async def lifespan(app: FastAPI):
             f"Run: ollama pull {vis_model}"
         )
 
+    # Start Redis Pub/Sub subscriber — forwards worker progress to WS clients
+    # If Redis is unavailable the subscriber retries silently (see realtime_service)
+    _redis_task = asyncio.create_task(redis_subscriber())
+    logger.info("📡 Redis document-events subscriber started")
+
     yield
 
-    # Shutdown
+    # Shutdown — cancel the subscriber gracefully
+    _redis_task.cancel()
+    try:
+        await _redis_task
+    except asyncio.CancelledError:
+        pass
     logger.info("👋 Shutting down RAG Application")
 
 

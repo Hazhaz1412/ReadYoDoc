@@ -13,9 +13,22 @@ from app.services import settings_service
 from app.services import chunking_service, embedding_service, vector_store
 from app.services import vision_service
 from app.database import db
-from app.services.realtime_service import document_events, serialize_document
+from app.services.realtime_service import (
+    document_events,
+    serialize_document,
+    DocumentEventsManager,
+)
 
 logger = logging.getLogger(__name__)
+
+# ── Smart Image Filter constants ────────────────────────────────────────────
+# Minimum dimension (pixels) — anything smaller is likely a decorative glyph
+_IMG_MIN_SIZE_PX = 150
+# Maximum images extracted per page — avoids sending 5000+ tiny icons to Vision
+_MAX_IMAGES_PER_PAGE = 5
+# Aspect ratio guard: skip images that are unusually thin / tall (borders, lines)
+_ASPECT_RATIO_MAX = 5.0
+_ASPECT_RATIO_MIN = 0.2
 
 
 async def process_document(file_path: str, filename: str, doc_id: str) -> int:
@@ -165,31 +178,78 @@ def _parse_document(file_path: str, file_ext: str) -> list[dict]:
         raise ValueError(f"Unsupported file type: {file_ext}")
 
 
+def _is_meaningful_image(pil_image: Image.Image) -> bool:
+    """Return True only for images that are worth sending to the Vision model.
+
+    Applies three heuristic filters to skip decorative / junk images:
+    1. Minimum size: both width and height must be >= _IMG_MIN_SIZE_PX.
+    2. Aspect ratio: skips very wide banners and very tall slices (borders, rules).
+    3. Solid-color detection: single-colour images carry no useful information.
+    """
+    w, h = pil_image.size
+
+    # 1. Size guard
+    if w < _IMG_MIN_SIZE_PX or h < _IMG_MIN_SIZE_PX:
+        return False
+
+    # 2. Aspect ratio guard
+    ratio = w / h if h else 0
+    if ratio > _ASPECT_RATIO_MAX or ratio < _ASPECT_RATIO_MIN:
+        return False
+
+    # 3. Near-solid colour guard (thumbnails a 10x10 sample and check variance)
+    try:
+        thumb = pil_image.convert("L").resize((10, 10))
+        pixels = list(thumb.getdata())
+        spread = max(pixels) - min(pixels)
+        if spread < 15:  # nearly all the same grey level → solid colour
+            return False
+    except Exception:
+        pass  # if anything fails, keep the image
+
+    return True
+
+
 def _parse_pdf(file_path: str) -> list[dict]:
-    """Extract text and images from a PDF file, page by page."""
+    """Extract text and images from a PDF file, page by page.
+
+    Uses smart filtering (_is_meaningful_image) to discard decorative elements,
+    borders, glyphs, and other PDF artefacts that inflate the image count.
+    A hard cap of _MAX_IMAGES_PER_PAGE per page prevents runaway Vision calls
+    on documents like slide decks with thousands of tiny images.
+    """
     reader = PdfReader(file_path)
     pages = []
     for i, page in enumerate(reader.pages):
         text = page.extract_text() or ""
 
-        # Extract images from this page
-        images_b64 = []
+        # Extract meaningful images from this page
+        images_b64: list[str] = []
         if settings_service.get("VISION_ENABLED"):
             try:
-                for img_obj in page.images:
+                raw_images = list(page.images)
+                logger.debug(
+                    f"[PDF] Page {i+1}: {len(raw_images)} raw image objects found"
+                )
+                for img_obj in raw_images:
+                    if len(images_b64) >= _MAX_IMAGES_PER_PAGE:
+                        logger.debug(
+                            f"[PDF] Page {i+1}: reached cap of {_MAX_IMAGES_PER_PAGE} images, skipping rest"
+                        )
+                        break
                     try:
-                        img_data = img_obj.data
-                        # Convert to PNG via Pillow for consistent format
-                        pil_image = Image.open(io.BytesIO(img_data))
-                        # Skip tiny images (likely decorative elements)
-                        if pil_image.width < 50 or pil_image.height < 50:
+                        pil_image = Image.open(io.BytesIO(img_obj.data))
+                        if not _is_meaningful_image(pil_image):
                             continue
                         buf = io.BytesIO()
                         pil_image.convert("RGB").save(buf, format="PNG")
-                        b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-                        images_b64.append(b64)
+                        images_b64.append(
+                            base64.b64encode(buf.getvalue()).decode("utf-8")
+                        )
                     except Exception as img_err:
-                        logger.debug(f"Skipping unreadable image on page {i+1}: {img_err}")
+                        logger.debug(
+                            f"Skipping unreadable image on page {i+1}: {img_err}"
+                        )
             except Exception as e:
                 logger.debug(f"Could not extract images from page {i+1}: {e}")
 
@@ -317,7 +377,13 @@ async def _update_progress(
     status_detail: str,
     progress: int,
 ):
-    """Persist and broadcast intermediate document progress."""
+    """Persist document progress in SQLite and broadcast via Redis Pub/Sub.
+
+    When running inside a Celery worker the broadcast goes through Redis so the
+    FastAPI WebSocket subscriber can forward it to browser clients.
+    When running without Redis (local dev / tests) the in-process WebSocket
+    broadcast is used as a fallback.
+    """
     doc = await db.get_document(doc_id)
     chunk_count = doc["chunk_count"] if doc else 0
     await db.update_document_status(
@@ -331,13 +397,17 @@ async def _update_progress(
 
 
 async def _broadcast_document(doc_id: str, event_type: str):
-    """Broadcast the latest document snapshot if available."""
+    """Broadcast the latest document snapshot via Redis Pub/Sub (primary) or
+    direct WebSocket (fallback for local dev without Redis).
+    """
     doc = await db.get_document(doc_id)
     if not doc:
         return
-    await document_events.broadcast(
-        {
-            "type": event_type,
-            "document": serialize_document(doc),
-        }
-    )
+    payload = {
+        "type": event_type,
+        "document": serialize_document(doc),
+    }
+    # Primary path: publish to Redis so the API subscriber forwards to WS clients
+    DocumentEventsManager.publish_sync(payload)
+    # Fallback: also broadcast in-process for local dev / single-container setups
+    await document_events.broadcast(payload)

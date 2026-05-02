@@ -3,7 +3,7 @@
 import os
 import logging
 from pathlib import Path
-from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
 from app.config import settings
@@ -15,6 +15,7 @@ from app.models.schemas import (
 from app.database import db
 from app.services import document_service, vector_store
 from app.services.realtime_service import document_events, serialize_document
+from app.tasks import process_document_task
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/documents", tags=["Documents"])
@@ -26,13 +27,13 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 @router.post("/upload", response_model=list[DocumentResponse])
 async def upload_documents(
-    background_tasks: BackgroundTasks,
     files: list[UploadFile] = File(...),
 ):
     """Upload one or more documents for processing.
 
     Supported formats: PDF, DOCX, TXT, MD.
-    Files are saved and processing happens in the background.
+    Files are saved immediately and processing is dispatched to the Celery
+    worker queue — the request returns instantly without waiting for ingestion.
     """
     responses = []
 
@@ -67,7 +68,7 @@ async def upload_documents(
         with open(file_path, "wb") as f:
             f.write(contents)
 
-        # Create database record
+        # Create database record (status: 'processing' / Queued for ingestion)
         doc_id = await db.insert_document(
             filename=file.filename or "unknown",
             file_type=ext,
@@ -75,12 +76,10 @@ async def upload_documents(
             file_path=str(file_path),
         )
 
-        # Process in background
-        background_tasks.add_task(
-            document_service.process_document,
-            str(file_path),
-            file.filename or "unknown",
-            doc_id,
+        # ✨ Dispatch to Celery worker — returns immediately, never blocks the API
+        process_document_task.delay(str(file_path), file.filename or "unknown", doc_id)
+        logger.info(
+            f"[Upload] Queued doc_id={doc_id} ({file.filename}) for Celery ingestion"
         )
 
         doc = await db.get_document(doc_id)
