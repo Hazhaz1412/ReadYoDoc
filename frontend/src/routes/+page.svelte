@@ -9,6 +9,24 @@
     'List the strongest evidence you found and cite the relevant documents for each point.',
   ];
 
+  const chatModes = [
+    {
+      value: 'strict',
+      label: 'Strict',
+      description: 'Only answer from uploaded documents. No off-topic chat.',
+    },
+    {
+      value: 'hybrid',
+      label: 'Hybrid',
+      description: 'Prefer documents, but can fall back to general answers when needed.',
+    },
+    {
+      value: 'friendly',
+      label: 'Friendly',
+      description: 'Can chat freely and does not require document grounding for every reply.',
+    },
+  ];
+
   let documents = [];
   let messages = [];
   let query = '';
@@ -46,6 +64,7 @@
     EMBEDDING_MODEL: 'bge-m3',
     VISION_MODEL: 'qwen3-vl:8b',
     VISION_ENABLED: true,
+    CHAT_MODE: 'hybrid',
     MEMORY_MAX_MESSAGES: 20,
     CHUNK_SIZE: 500,
     CHUNK_OVERLAP: 50,
@@ -655,13 +674,13 @@
   <title>AI RAG Control Center</title>
 </svelte:head>
 
-<div class="relative min-h-screen overflow-hidden">
+<div class="relative h-screen overflow-hidden">
   <div class="pointer-events-none absolute left-[8%] top-[2%] h-72 w-72 rounded-full bg-sky-400/15 blur-[100px]"></div>
   <div class="pointer-events-none absolute bottom-[6%] right-[10%] h-80 w-80 rounded-full bg-amber-300/10 blur-[110px]"></div>
 
-  <div class="relative grid min-h-screen lg:grid-cols-[280px_minmax(0,1fr)]">
+  <div class="relative grid h-screen lg:grid-cols-[280px_minmax(0,1fr)]">
     <aside
-      class={`fixed inset-y-0 left-0 z-40 w-[min(92vw,320px)] p-4 transition duration-200 lg:static lg:w-auto lg:translate-x-0 lg:p-6 ${
+      class={`fixed inset-y-0 left-0 z-40 w-[min(92vw,320px)] p-4 transition duration-200 lg:static lg:h-screen lg:w-auto lg:translate-x-0 lg:p-6 ${
         sidebarOpen ? 'translate-x-0' : '-translate-x-[108%] lg:translate-x-0'
       }`}
     >
@@ -741,7 +760,7 @@
       </div>
     </aside>
 
-    <main class="relative flex min-h-screen min-w-0 flex-col px-4 pb-4 pt-16 lg:px-6 lg:pb-6 lg:pt-6">
+    <main class="relative flex h-screen min-h-0 min-w-0 flex-col overflow-hidden px-4 pb-4 pt-16 lg:px-6 lg:pb-6 lg:pt-6">
       <button
         class="glass-panel fixed left-4 top-4 z-50 grid h-11 w-11 place-items-center rounded-2xl lg:hidden"
         type="button"
@@ -755,7 +774,7 @@
       </button>
 
       {#if activeView === 'chat'}
-        <section class="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] gap-5">
+        <section class="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] gap-5 overflow-hidden">
           <div bind:this={conversationEl} class="min-h-0 overflow-y-auto pr-1">
             <div class="mx-auto flex max-w-4xl flex-col gap-5 pb-2">
               {#if messages.length === 0}
@@ -905,7 +924,7 @@
         </section>
 
       {:else if activeView === 'documents'}
-        <section class="mx-auto flex w-full max-w-4xl flex-col gap-6 pt-4">
+        <section class="mx-auto flex min-h-0 w-full max-w-4xl flex-1 flex-col gap-6 overflow-y-auto pt-4 pr-1">
           <div class="flex items-center justify-between">
             <h2 class="text-2xl font-bold text-white">Knowledge Base</h2>
             <div class="flex items-center gap-3">
@@ -1024,7 +1043,7 @@
         </section>
 
       {:else if activeView === 'settings'}
-        <section class="mx-auto flex w-full max-w-4xl flex-col gap-6 pt-4">
+        <section class="mx-auto flex min-h-0 w-full max-w-4xl flex-1 flex-col gap-6 overflow-y-auto pt-4 pr-1">
           <h2 class="text-2xl font-bold text-white">System Settings</h2>
 
           <div class="grid gap-6 md:grid-cols-2">
@@ -1057,6 +1076,35 @@
             <!-- RAG & Memory Config -->
             <div class="glass-panel flex flex-col gap-5 rounded-[24px] p-6">
               <h3 class="text-sm font-bold uppercase tracking-[0.1em] text-slate-400 border-b border-white/5 pb-3">RAG & Memory</h3>
+
+              <div class="flex flex-col gap-3">
+                <div>
+                  <label class="text-xs font-semibold text-slate-300">Chat Mode</label>
+                  <p class="mt-1 text-xs leading-5 text-slate-500">Controls how strictly the assistant must stay grounded in your uploaded documents.</p>
+                </div>
+
+                <div class="grid gap-2">
+                  {#each chatModes as mode}
+                    <button
+                      type="button"
+                      class={`rounded-2xl border px-4 py-3 text-left transition ${
+                        systemSettings.CHAT_MODE === mode.value
+                          ? 'border-sky-400/40 bg-sky-400/12 shadow-[0_0_0_1px_rgba(56,189,248,0.12)]'
+                          : 'border-white/10 bg-white/[0.03] hover:border-white/20 hover:bg-white/[0.05]'
+                      }`}
+                      on:click={() => (systemSettings.CHAT_MODE = mode.value)}
+                    >
+                      <div class="flex items-center justify-between gap-3">
+                        <span class="text-sm font-bold text-white">{mode.label}</span>
+                        {#if systemSettings.CHAT_MODE === mode.value}
+                          <span class="rounded-full bg-sky-300/15 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-sky-200">Active</span>
+                        {/if}
+                      </div>
+                      <p class="mt-2 text-xs leading-5 text-slate-400">{mode.description}</p>
+                    </button>
+                  {/each}
+                </div>
+              </div>
               
               <div class="flex flex-col gap-3">
                 <div class="flex justify-between">
@@ -1270,7 +1318,10 @@
 </div>
 
 <style>
+  :global(html),
   :global(body) {
+    height: 100%;
+    overflow: hidden;
     background-color: #0b1120;
     color: #e2e8f0;
     font-family:

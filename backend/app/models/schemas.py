@@ -1,7 +1,7 @@
 """Pydantic models for API request/response schemas."""
 
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Literal, Optional
 from datetime import datetime
 
 
@@ -152,6 +152,7 @@ class SettingsUpdate(BaseModel):
     EMBEDDING_MODEL: Optional[str] = None
     VISION_MODEL: Optional[str] = None
     VISION_ENABLED: Optional[bool] = None
+    CHAT_MODE: Optional[Literal["strict", "hybrid", "friendly"]] = None
     MEMORY_MAX_MESSAGES: Optional[int] = Field(None, ge=0, le=100)
     CHUNK_SIZE: Optional[int] = Field(None, ge=100, le=4000)
     CHUNK_OVERLAP: Optional[int] = Field(None, ge=0, le=1000)

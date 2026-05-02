@@ -9,6 +9,16 @@ logger = logging.getLogger(__name__)
 # In-memory cache for fast synchronous or frequent reads
 _cache = {}
 
+VALID_CHAT_MODES = {"strict", "hybrid", "friendly"}
+
+
+def _normalize_chat_mode(value: str | None) -> str:
+    """Normalize chat mode values and fall back safely."""
+    if not value:
+        return "hybrid"
+    normalized = str(value).strip().lower()
+    return normalized if normalized in VALID_CHAT_MODES else "hybrid"
+
 
 async def load_settings():
     """Load all settings from DB into memory cache."""
@@ -21,6 +31,7 @@ async def load_settings():
         "EMBEDDING_MODEL": db_settings.get("EMBEDDING_MODEL", env_settings.EMBEDDING_MODEL),
         "VISION_MODEL": db_settings.get("VISION_MODEL", env_settings.VISION_MODEL),
         "VISION_ENABLED": db_settings.get("VISION_ENABLED", str(env_settings.VISION_ENABLED)).lower() == "true",
+        "CHAT_MODE": _normalize_chat_mode(db_settings.get("CHAT_MODE", env_settings.CHAT_MODE)),
         "MEMORY_MAX_MESSAGES": int(db_settings.get("MEMORY_MAX_MESSAGES", env_settings.MEMORY_MAX_MESSAGES)),
         "CHUNK_SIZE": int(db_settings.get("CHUNK_SIZE", env_settings.CHUNK_SIZE)),
         "CHUNK_OVERLAP": int(db_settings.get("CHUNK_OVERLAP", env_settings.CHUNK_OVERLAP)),
@@ -39,7 +50,10 @@ async def update_settings(updates: dict):
     for key, value in updates.items():
         if key in _cache:
             # Type cast based on existing cache type
-            if isinstance(_cache[key], bool):
+            if key == "CHAT_MODE":
+                val_to_save = _normalize_chat_mode(value)
+                _cache[key] = val_to_save
+            elif isinstance(_cache[key], bool):
                 val_to_save = str(value).lower()
                 _cache[key] = val_to_save == "true"
             elif isinstance(_cache[key], int):

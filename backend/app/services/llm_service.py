@@ -24,6 +24,26 @@ Rules:
 7. Format your answer with markdown when appropriate (bullet points, bold, code blocks).
 8. You have access to the conversation history. Use it to understand follow-up questions, pronouns like "it", "that", "this", and references to previous answers. Maintain context across the conversation."""
 
+GENERAL_SYSTEM_PROMPT = """You are a helpful AI assistant.
+
+Rules:
+1. Answer naturally and helpfully, even when the user is chatting casually.
+2. If the user asks in Vietnamese, respond in Vietnamese. If they ask in English, respond in English.
+3. Be concise but useful.
+4. Use markdown when it improves clarity.
+5. You have access to the conversation history. Use it to maintain continuity across turns."""
+
+HYBRID_FALLBACK_SYSTEM_PROMPT = """You are a helpful AI assistant in hybrid document-chat mode.
+
+Rules:
+1. When document context is available and relevant, prioritize it.
+2. If the current question is outside the uploaded documents or there is not enough document evidence, you may still answer as a general assistant.
+3. When answering without document grounding, be explicit that the answer is general guidance rather than based on the uploaded documents.
+4. If the user asks in Vietnamese, respond in Vietnamese. If they ask in English, respond in English.
+5. Be concise but useful.
+6. Use markdown when it improves clarity.
+7. You have access to the conversation history. Use it to maintain continuity across turns."""
+
 MEMORY_INSTRUCTION = """
 ## Memory Detection
 If the user explicitly asks you to remember, save, or note something about themselves (e.g. "nhớ rằng...", "lưu lại...", "remember that..."), OR if you detect a strong repeated preference pattern across the conversation, wrap the personalization fact in a special tag:
@@ -104,6 +124,80 @@ User question: {query}"""
     return messages
 
 
+def _build_general_prompt(
+    query: str,
+    history: list[dict] | None = None,
+    use_thinking: bool = False,
+    memories: list[dict] | None = None,
+    mode: str = "friendly",
+) -> list[dict]:
+    """Build chat messages for non-RAG assistant replies."""
+    from app.services.memory_service import format_memories_for_prompt
+
+    system_content = (
+        HYBRID_FALLBACK_SYSTEM_PROMPT if mode == "hybrid" else GENERAL_SYSTEM_PROMPT
+    )
+
+    if memories:
+        formatted = format_memories_for_prompt(memories)
+        system_content += (
+            f"\n\n## Personalization\nYou know the following about this user. "
+            f"Use these to personalize your responses:\n{formatted}"
+        )
+        system_content += MEMORY_INSTRUCTION
+    else:
+        system_content += MEMORY_INSTRUCTION
+
+    user_message = query
+    if not use_thinking:
+        user_message += " /no_think"
+
+    messages = [{"role": "system", "content": system_content}]
+
+    if history:
+        for msg in history:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+
+    messages.append({"role": "user", "content": user_message})
+    return messages
+
+
+async def _stream_from_messages(messages: list[dict]) -> AsyncGenerator[str, None]:
+    """Stream tokens from Ollama for a prepared message list."""
+    url = f"{settings.OLLAMA_BASE_URL}/api/chat"
+    payload = {
+        "model": settings_service.get("LLM_MODEL"),
+        "messages": messages,
+        "stream": True,
+        "options": {
+            "temperature": settings.LLM_TEMPERATURE,
+        },
+    }
+
+    try:
+        async with _client.stream("POST", url, json=payload) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line.strip():
+                    continue
+                try:
+                    data = json.loads(line)
+                    message = data.get("message", {})
+                    content = message.get("content", "")
+                    if content:
+                        yield content
+
+                    if data.get("done", False):
+                        break
+                except json.JSONDecodeError:
+                    continue
+
+    except httpx.ConnectError:
+        yield f"\n\n⚠️ Error: Cannot connect to Ollama server at {settings.OLLAMA_BASE_URL}"
+    except httpx.HTTPStatusError as e:
+        yield f"\n\n⚠️ Error: LLM returned status {e.response.status_code}"
+
+
 async def generate_answer_stream(
     query: str,
     context_chunks: list[dict],
@@ -124,41 +218,21 @@ async def generate_answer_stream(
         Individual text tokens as they're generated.
     """
     messages = _build_prompt(query, context_chunks, history, use_thinking, memories)
+    async for token in _stream_from_messages(messages):
+        yield token
 
-    url = f"{settings.OLLAMA_BASE_URL}/api/chat"
-    payload = {
-        "model": settings_service.get("LLM_MODEL"),
-        "messages": messages,
-        "stream": True,
-        "options": {
-            "temperature": settings.LLM_TEMPERATURE,
-        },
-    }
 
-    try:
-        async with _client.stream("POST", url, json=payload) as response:
-            response.raise_for_status()
-            async for line in response.aiter_lines():
-                if not line.strip():
-                    continue
-                try:
-                    data = json.loads(line)
-                    # Skip thinking tokens (between <think> tags)
-                    message = data.get("message", {})
-                    content = message.get("content", "")
-                    if content:
-                        yield content
-
-                    # Check if generation is done
-                    if data.get("done", False):
-                        break
-                except json.JSONDecodeError:
-                    continue
-
-    except httpx.ConnectError:
-        yield f"\n\n⚠️ Error: Cannot connect to Ollama server at {settings.OLLAMA_BASE_URL}"
-    except httpx.HTTPStatusError as e:
-        yield f"\n\n⚠️ Error: LLM returned status {e.response.status_code}"
+async def generate_general_answer_stream(
+    query: str,
+    history: list[dict] | None = None,
+    use_thinking: bool = False,
+    memories: list[dict] | None = None,
+    mode: str = "friendly",
+) -> AsyncGenerator[str, None]:
+    """Stream tokens for non-RAG assistant replies."""
+    messages = _build_general_prompt(query, history, use_thinking, memories, mode)
+    async for token in _stream_from_messages(messages):
+        yield token
 
 
 async def generate_answer(

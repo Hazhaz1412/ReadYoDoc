@@ -52,8 +52,28 @@ def _normalize_query(text: str) -> str:
     return re.sub(r"\s+", " ", lowered)
 
 
-def _direct_assistant_reply(query: str) -> str | None:
-    """Return a direct non-RAG reply for greetings and capability questions."""
+def _strict_mode_notice(query: str) -> str:
+    """Reply for strict mode when the query is outside document-grounded scope."""
+    if _looks_like_vietnamese(query):
+        return (
+            "Strict mode đang bật. Tôi chỉ trả lời các câu hỏi bám theo tài liệu đã tải lên.\n\n"
+            "Hãy hỏi về nội dung tài liệu, ví dụ:\n"
+            "- `Tóm tắt tài liệu này`\n"
+            "- `Tài liệu nói gì về microservices?`\n"
+            "- `Có mâu thuẫn nào giữa các tài liệu không?`"
+        )
+
+    return (
+        "Strict mode is enabled. I only answer questions grounded in the uploaded documents.\n\n"
+        "Try asking something like:\n"
+        "- `Summarize this document`\n"
+        "- `What does the document say about microservices?`\n"
+        "- `Are there contradictions across these documents?`"
+    )
+
+
+def _direct_assistant_reply(query: str, chat_mode: str) -> str | None:
+    """Return a direct reply for greetings and capability questions."""
     normalized = _normalize_query(query)
     is_vi = _looks_like_vietnamese(query)
 
@@ -76,6 +96,9 @@ def _direct_assistant_reply(query: str) -> str | None:
     if any(re.search(pattern, normalized) for pattern in greeting_patterns) or any(
         marker in normalized for marker in capability_markers
     ):
+        if chat_mode == "strict":
+            return _strict_mode_notice(query)
+
         if is_vi:
             return (
                 "Xin chào! Tôi có thể giúp bạn làm việc với kho tài liệu đã tải lên.\n\n"
@@ -100,6 +123,26 @@ def _direct_assistant_reply(query: str) -> str | None:
         )
 
     return None
+
+
+def _strict_missing_context_reply(query: str) -> str:
+    """Reply when strict mode cannot ground the answer in documents."""
+    if _looks_like_vietnamese(query):
+        return (
+            "Tôi không có đủ ngữ cảnh phù hợp trong các tài liệu đã tải lên để trả lời câu hỏi này ở `Strict mode`.\n\n"
+            "Bạn có thể:\n"
+            "- Hỏi lại sát hơn với nội dung tài liệu\n"
+            "- Chuyển sang `Hybrid` để cho phép trả lời ngoài tài liệu khi cần\n"
+            "- Chuyển sang `Friendly` nếu muốn chat tự do hơn"
+        )
+
+    return (
+        "I don't have enough relevant context in the uploaded documents to answer this question in `Strict mode`.\n\n"
+        "You can:\n"
+        "- Ask a question that is closer to the document content\n"
+        "- Switch to `Hybrid` to allow fallback answers outside the documents\n"
+        "- Switch to `Friendly` for freer general chat"
+    )
 
 
 def _stream_single_message(conversation_id: str, text: str) -> StreamingResponse:
@@ -151,27 +194,88 @@ async def chat(request: ChatRequest):
     # Save the user message immediately
     await db.insert_chat_message(conversation_id, "user", request.query)
 
+    # Auto-title on first message
+    conv = await db.get_conversation(conversation_id)
+    if conv and conv["title"] == "New Chat":
+        title = request.query[:60].strip()
+        if len(request.query) > 60:
+            title += "..."
+        await db.update_conversation_title(conversation_id, title)
+
+    chat_mode = settings_service.get("CHAT_MODE") or "hybrid"
+    personalization_on = settings_service.get("PERSONALIZATION_ENABLED")
+    memories = await db.get_active_memories() if personalization_on else []
+
+    def build_stream_response(token_iterator, sources_data):
+        """Create a streaming response and persist the final assistant text."""
+
+        async def event_stream():
+            yield f"data: {json.dumps({'type': 'meta', 'data': {'conversation_id': conversation_id}})}\n\n"
+            yield f"data: {json.dumps({'type': 'sources', 'data': sources_data})}\n\n"
+
+            full_response = []
+            async for token in token_iterator:
+                full_response.append(token)
+                yield f"data: {json.dumps({'type': 'token', 'data': token})}\n\n"
+
+            assistant_text = "".join(full_response)
+
+            if personalization_on and assistant_text:
+                clean_text, new_memories = memory_service.extract_memories_from_response(assistant_text)
+                existing = await db.get_all_memories()
+
+                saved_memories = []
+                for mem_content in new_memories:
+                    if not memory_service.is_duplicate_memory(mem_content, existing):
+                        mem_id = await db.insert_memory(mem_content, source="auto")
+                        if mem_id:
+                            saved_memories.append(mem_content)
+                            logger.info(f"🧠 Memory saved: {mem_content[:80]}")
+
+                for mem in saved_memories:
+                    yield f"data: {json.dumps({'type': 'memory_saved', 'data': mem})}\n\n"
+
+                text_to_save = clean_text or assistant_text
+                if text_to_save:
+                    await db.insert_chat_message(conversation_id, "assistant", text_to_save)
+            elif assistant_text:
+                await db.insert_chat_message(conversation_id, "assistant", assistant_text)
+
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
     # Handle greetings / assistant capability questions outside RAG.
-    direct_reply = _direct_assistant_reply(request.query)
+    direct_reply = _direct_assistant_reply(request.query, chat_mode)
     if direct_reply:
         await db.insert_chat_message(conversation_id, "assistant", direct_reply)
         return _stream_single_message(conversation_id, direct_reply)
 
     # Check if we have any documents
     if vector_store.get_total_chunks() == 0:
-        raise HTTPException(
-            status_code=400,
-            detail="No documents uploaded yet. Please upload documents first.",
-        )
+        if chat_mode == "strict":
+            reply = _strict_missing_context_reply(request.query)
+            await db.insert_chat_message(conversation_id, "assistant", reply)
+            return _stream_single_message(conversation_id, reply)
 
-    # Auto-title on first message
-    conv = await db.get_conversation(conversation_id)
-    if conv and conv["title"] == "New Chat":
-        # Use first 60 chars of the query as title
-        title = request.query[:60].strip()
-        if len(request.query) > 60:
-            title += "..."
-        await db.update_conversation_title(conversation_id, title)
+        return build_stream_response(
+            llm_service.generate_general_answer_stream(
+                request.query,
+                history=history,
+                use_thinking=request.use_thinking,
+                memories=memories if personalization_on else None,
+                mode=chat_mode,
+            ),
+            [],
+        )
 
     # Step 1: Generate embedding for the query
     try:
@@ -186,94 +290,59 @@ async def chat(request: ChatRequest):
     similar_chunks = vector_store.query_similar(query_embedding, top_k=request.top_k)
 
     if not similar_chunks:
-        raise HTTPException(
-            status_code=404,
-            detail="No relevant content found in uploaded documents.",
+        if chat_mode == "strict":
+            reply = _strict_missing_context_reply(request.query)
+            await db.insert_chat_message(conversation_id, "assistant", reply)
+            return _stream_single_message(conversation_id, reply)
+
+        return build_stream_response(
+            llm_service.generate_general_answer_stream(
+                request.query,
+                history=history,
+                use_thinking=request.use_thinking,
+                memories=memories if personalization_on else None,
+                mode=chat_mode,
+            ),
+            [],
         )
 
     best_score = max(chunk["relevance_score"] for chunk in similar_chunks)
     if best_score < settings.MIN_RELEVANCE_SCORE:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                "The question does not appear to match the uploaded documents closely enough. "
-                "Try asking about the document content more specifically."
+        if chat_mode == "strict":
+            reply = _strict_missing_context_reply(request.query)
+            await db.insert_chat_message(conversation_id, "assistant", reply)
+            return _stream_single_message(conversation_id, reply)
+
+        return build_stream_response(
+            llm_service.generate_general_answer_stream(
+                request.query,
+                history=history,
+                use_thinking=request.use_thinking,
+                memories=memories if personalization_on else None,
+                mode=chat_mode,
             ),
+            [],
         )
 
-    # Load personalization memories if enabled
-    personalization_on = settings_service.get("PERSONALIZATION_ENABLED")
-    memories = []
-    if personalization_on:
-        memories = await db.get_active_memories()
-
-    # Step 3: Stream the answer
-    async def event_stream():
-        # Send conversation metadata first
-        yield f"data: {json.dumps({'type': 'meta', 'data': {'conversation_id': conversation_id}})}\n\n"
-
-        # Send sources
-        sources_data = [
-            {
-                "content": c["content"][:200] + "..." if len(c["content"]) > 200 else c["content"],
-                "source_file": c["source_file"],
-                "page": c.get("page"),
-                "chunk_index": c["chunk_index"],
-                "relevance_score": c["relevance_score"],
-            }
-            for c in similar_chunks
-        ]
-        yield f"data: {json.dumps({'type': 'sources', 'data': sources_data})}\n\n"
-
-        # Stream answer tokens and collect full response
-        full_response = []
-        async for token in llm_service.generate_answer_stream(
+    sources_data = [
+        {
+            "content": c["content"][:200] + "..." if len(c["content"]) > 200 else c["content"],
+            "source_file": c["source_file"],
+            "page": c.get("page"),
+            "chunk_index": c["chunk_index"],
+            "relevance_score": c["relevance_score"],
+        }
+        for c in similar_chunks
+    ]
+    return build_stream_response(
+        llm_service.generate_answer_stream(
             request.query,
             similar_chunks,
             history=history,
             use_thinking=request.use_thinking,
             memories=memories if personalization_on else None,
-        ):
-            full_response.append(token)
-            yield f"data: {json.dumps({'type': 'token', 'data': token})}\n\n"
-
-        # Collect full text and process memories
-        assistant_text = "".join(full_response)
-
-        # Extract and save memories from response
-        if personalization_on and assistant_text:
-            clean_text, new_memories = memory_service.extract_memories_from_response(assistant_text)
-            existing = await db.get_all_memories()
-
-            saved_memories = []
-            for mem_content in new_memories:
-                if not memory_service.is_duplicate_memory(mem_content, existing):
-                    mem_id = await db.insert_memory(mem_content, source="auto")
-                    if mem_id:
-                        saved_memories.append(mem_content)
-                        logger.info(f"🧠 Memory saved: {mem_content[:80]}")
-
-            # Send memory saved events to frontend
-            for mem in saved_memories:
-                yield f"data: {json.dumps({'type': 'memory_saved', 'data': mem})}\n\n"
-
-            # Save the clean text (without memory tags) to DB
-            if clean_text:
-                await db.insert_chat_message(conversation_id, "assistant", clean_text)
-        elif assistant_text:
-            await db.insert_chat_message(conversation_id, "assistant", assistant_text)
-
-        # Signal completion
-        yield f"data: {json.dumps({'type': 'done'})}\n\n"
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+        ),
+        sources_data,
     )
 
 

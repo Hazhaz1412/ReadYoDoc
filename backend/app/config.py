@@ -47,6 +47,7 @@ class Settings:
     TOP_K_RESULTS: int = 5
     LLM_TEMPERATURE: float = 0.3
     MIN_RELEVANCE_SCORE: float = float(os.getenv("MIN_RELEVANCE_SCORE", "0.35"))
+    CHAT_MODE: str = os.getenv("CHAT_MODE", "hybrid")
 
     # Memory
     MEMORY_MAX_MESSAGES: int = int(os.getenv("MEMORY_MAX_MESSAGES", "20"))
